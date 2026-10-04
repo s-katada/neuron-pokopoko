@@ -1,0 +1,4 @@
+CREATE TABLE spike_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    value TEXT NOT NULL
+);

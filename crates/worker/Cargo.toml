@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 poko-core = { path = "../core" }
-worker = { version = "0.8", features = ["http"] }
+worker = { version = "0.8", features = ["http", "d1"] }
 worker-macros = { version = "0.8", features = ["http"] }
 axum = { version = "0.8", default-features = false, features = ["json"] }
 tower-service = "0.3"
