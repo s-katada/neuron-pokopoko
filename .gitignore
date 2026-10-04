@@ -1,0 +1,18 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+
+# worker-build の出力
+crates/worker/build/
+
+# Cloudflare ローカル状態
+.wrangler/
+
+# nix / direnv
+.direnv/
+
+# OS
+.DS_Store
