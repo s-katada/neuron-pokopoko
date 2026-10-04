@@ -1,3 +1,7 @@
+mod schedule;
+
+pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
+
 pub fn ping() -> &'static str {
     "pong"
 }
