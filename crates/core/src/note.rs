@@ -120,7 +120,7 @@ pub enum NoteError {
 
 /// `relative_path` は vault 相対の `learning/<大>/<中>/<小>/<概念>.md`。
 pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError> {
-    let (major, middle, minor, concept) = location(relative_path)?;
+    let (major, middle, minor, concept) = parse_location(relative_path)?;
     let (yaml, body) = split_frontmatter(markdown)?;
     let frontmatter: Frontmatter = serde_yaml_ng::from_str(yaml)
         .map_err(|err| NoteError::InvalidFrontmatter(err.to_string()))?;
@@ -149,7 +149,8 @@ struct Frontmatter {
     sources: Vec<String>,
 }
 
-fn location(path: &str) -> Result<(String, String, String, String), NoteError> {
+pub(crate) fn parse_location(path: &str) -> Result<(String, String, String, String), NoteError> {
+    let path: String = path.nfc().collect();
     let mut parts = path.split('/');
     let (Some("learning"), Some(major), Some(middle), Some(minor), Some(file)) = (
         parts.next(),
