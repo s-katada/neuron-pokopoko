@@ -1,3 +1,4 @@
+mod lint;
 pub mod note;
 mod schedule;
 mod taxonomy;
@@ -5,6 +6,7 @@ mod taxonomy;
 use serde::Serialize;
 use ts_rs::TS;
 
+pub use lint::{Finding, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 pub use taxonomy::{TaxonRank, Taxonomy, TaxonomyError, load, validate};
