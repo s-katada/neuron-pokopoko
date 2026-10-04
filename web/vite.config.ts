@@ -13,4 +13,7 @@ export default defineConfig({
       typeCheck: true,
     },
   },
+  fmt: {
+    ignorePatterns: ["src/types/**"],
+  },
 });

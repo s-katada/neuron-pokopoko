@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
-use poko_core::{Card, Rating, schedule};
+use poko_core::{Card, DemoSchedule, Rating, schedule};
 use serde::{Deserialize, Serialize};
 use tower_service::Service;
 use wasm_bindgen::JsValue;
@@ -32,14 +32,6 @@ struct HealthBody {
 
 async fn health() -> Json<HealthBody> {
     Json(HealthBody { ok: true })
-}
-
-#[derive(Serialize)]
-struct DemoSchedule {
-    rating: &'static str,
-    interval_days: f32,
-    stability: f32,
-    difficulty: f32,
 }
 
 async fn demo_schedule() -> Result<Json<DemoSchedule>, StatusCode> {
