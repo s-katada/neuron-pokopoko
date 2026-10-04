@@ -1,3 +1,4 @@
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -39,13 +40,20 @@ pub enum NoteError {
     InvalidFrontmatter(String),
     #[error("id がない")]
     MissingId,
+    #[error("未知の段見出し: {0}")]
+    UnknownHeading(String),
+    #[error("段が重複している: {0}")]
+    DuplicateSection(String),
+    #[error("初級の段がない")]
+    MissingBeginner,
+    #[error("段の外に項目がある")]
+    ItemOutsideSection,
 }
 
 /// `relative_path` は vault 相対の `learning/<大>/<中>/<小>/<概念>.md`。
-/// 本文の段はまだ切らない。
 pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError> {
     let (major, middle, minor, concept) = location(relative_path)?;
-    let yaml = split_frontmatter(markdown)?;
+    let (yaml, body) = split_frontmatter(markdown)?;
     let frontmatter: Frontmatter = serde_yaml_ng::from_str(yaml)
         .map_err(|err| NoteError::InvalidFrontmatter(err.to_string()))?;
     let id = frontmatter.id.ok_or(NoteError::MissingId)?;
@@ -54,6 +62,7 @@ pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError
             "id は小文字ケバブケース".into(),
         ));
     }
+    let sections = sections(body)?;
     Ok(Note {
         id,
         sources: frontmatter.sources,
@@ -61,7 +70,7 @@ pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError
         middle,
         minor,
         concept,
-        sections: Vec::new(),
+        sections,
     })
 }
 
@@ -103,7 +112,7 @@ fn location(path: &str) -> Result<(String, String, String, String), NoteError> {
     ))
 }
 
-fn split_frontmatter(markdown: &str) -> Result<&str, NoteError> {
+fn split_frontmatter(markdown: &str) -> Result<(&str, &str), NoteError> {
     let Some(rest) = markdown.strip_prefix("---\n") else {
         return Err(NoteError::MissingFrontmatter);
     };
@@ -112,7 +121,97 @@ fn split_frontmatter(markdown: &str) -> Result<&str, NoteError> {
             "frontmatter が閉じていない".into(),
         ));
     };
-    Ok(&rest[..end])
+    Ok((&rest[..end], &rest[end + "\n---\n".len()..]))
+}
+
+fn sections(body: &str) -> Result<Vec<Section>, NoteError> {
+    let mut sections = Vec::new();
+    let mut current: Option<Level> = None;
+    let mut heading: Option<HeadingLevel> = None;
+    let mut heading_text = String::new();
+    let mut item_depth = 0u32;
+
+    for (event, range) in Parser::new(body).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                heading = Some(level);
+                heading_text.clear();
+            }
+            Event::End(TagEnd::Heading(level)) => {
+                finish_heading(level, &heading_text, &mut sections, &mut current)?;
+                heading = None;
+            }
+            Event::Text(text) | Event::Code(text) if heading.is_some() => {
+                heading_text.push_str(&text);
+            }
+            Event::Start(Tag::Item) => item_depth += 1,
+            Event::End(TagEnd::Item) => {
+                if item_depth == 0 {
+                    return Err(NoteError::ItemOutsideSection);
+                }
+                item_depth -= 1;
+                if item_depth == 0 {
+                    let Some(level) = current else {
+                        return Err(NoteError::ItemOutsideSection);
+                    };
+                    let item = body[range].trim().to_owned();
+                    push_item(&mut sections, level, item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !sections
+        .iter()
+        .any(|section| section.level == Level::Beginner)
+    {
+        return Err(NoteError::MissingBeginner);
+    }
+    Ok(sections)
+}
+
+fn finish_heading(
+    level: HeadingLevel,
+    text: &str,
+    sections: &mut Vec<Section>,
+    current: &mut Option<Level>,
+) -> Result<(), NoteError> {
+    if level == HeadingLevel::H1 {
+        return Ok(());
+    }
+    if level != HeadingLevel::H2 {
+        return Err(NoteError::UnknownHeading(text.trim().to_owned()));
+    }
+    let name = text.trim();
+    let Some(parsed) = level_of(name) else {
+        return Err(NoteError::UnknownHeading(name.to_owned()));
+    };
+    if sections.iter().any(|section| section.level == parsed) {
+        return Err(NoteError::DuplicateSection(name.to_owned()));
+    }
+    sections.push(Section {
+        level: parsed,
+        items: Vec::new(),
+    });
+    *current = Some(parsed);
+    Ok(())
+}
+
+fn level_of(name: &str) -> Option<Level> {
+    match name {
+        "初級" => Some(Level::Beginner),
+        "中級" => Some(Level::Intermediate),
+        "上級" => Some(Level::Advanced),
+        "統合" => Some(Level::Integration),
+        _ => None,
+    }
+}
+
+fn push_item(sections: &mut [Section], level: Level, item: String) {
+    if let Some(section) = sections.iter_mut().find(|section| section.level == level) {
+        section.items.push(item);
+    }
 }
 
 fn is_kebab(id: &str) -> bool {

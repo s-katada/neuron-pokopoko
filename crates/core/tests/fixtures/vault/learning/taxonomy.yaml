@@ -1,0 +1,9 @@
+# learning/taxonomy.yaml の形式
+画像処理:
+  カメラ:
+    - 露出
+  QR:
+    - 構造
+Linux:
+  デスクトップ:
+    - 表示サーバ
