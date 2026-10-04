@@ -1,8 +1,10 @@
+mod note;
 mod schedule;
 
 use serde::Serialize;
 use ts_rs::TS;
 
+pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 
 /// `/api/demo-schedule` のレスポンス。`cargo test` が `web/src/types/` に出す生成物はコミットする。
