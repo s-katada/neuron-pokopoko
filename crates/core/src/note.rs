@@ -1,6 +1,8 @@
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 /// 段。仕様の beginner / intermediate / advanced / integration。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +17,73 @@ pub enum Level {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub level: Level,
-    pub items: Vec<String>,
+    pub items: Vec<Item>,
+}
+
+/// 箇条書き 1 項目。`question` が無い項目はカードにしない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub answer: String,
+    pub question: Option<String>,
+    pub rubric: Option<String>,
+    pub refs: Vec<String>,
+}
+
+/// 出題カード。安定キーは並び順に依存しない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Card {
+    pub stable_key: String,
+    pub note_id: String,
+    pub level: Level,
+    pub question: String,
+    pub answer: String,
+    pub rubric: Option<String>,
+    pub refs: Vec<String>,
+}
+
+impl Level {
+    /// 安定キーに使う段の英名。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Beginner => "beginner",
+            Self::Intermediate => "intermediate",
+            Self::Advanced => "advanced",
+            Self::Integration => "integration",
+        }
+    }
+}
+
+impl Note {
+    /// `Q:` がある項目だけをカードにする。
+    pub fn cards(&self) -> Vec<Card> {
+        let mut cards = Vec::new();
+        for section in &self.sections {
+            for item in &section.items {
+                let Some(question) = &item.question else {
+                    continue;
+                };
+                cards.push(Card {
+                    stable_key: format!(
+                        "{}/{}/{}",
+                        self.id,
+                        section.level.as_str(),
+                        qkey(question)
+                    ),
+                    note_id: self.id.clone(),
+                    level: section.level,
+                    question: question.clone(),
+                    answer: item.answer.clone(),
+                    rubric: item.rubric.clone(),
+                    refs: if section.level == Level::Integration {
+                        item.refs.clone()
+                    } else {
+                        Vec::new()
+                    },
+                });
+            }
+        }
+        cards
+    }
 }
 
 /// 1 ノート。分類と概念名はパス由来。時刻は持たない。
@@ -130,8 +198,11 @@ fn sections(body: &str) -> Result<Vec<Section>, NoteError> {
     let mut heading: Option<HeadingLevel> = None;
     let mut heading_text = String::new();
     let mut item_depth = 0u32;
+    let mut code_depth = 0u32;
+    let mut open: Option<Item> = None;
+    let mut nested = String::new();
 
-    for (event, range) in Parser::new(body).into_offset_iter() {
+    for (event, _range) in Parser::new(body).into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 heading = Some(level);
@@ -144,19 +215,47 @@ fn sections(body: &str) -> Result<Vec<Section>, NoteError> {
             Event::Text(text) | Event::Code(text) if heading.is_some() => {
                 heading_text.push_str(&text);
             }
-            Event::Start(Tag::Item) => item_depth += 1,
+            Event::Start(Tag::CodeBlock(_)) => code_depth += 1,
+            Event::End(TagEnd::CodeBlock) => {
+                code_depth = code_depth.saturating_sub(1);
+            }
+            Event::Start(Tag::Item) => {
+                item_depth += 1;
+                if item_depth == 1 {
+                    open = Some(Item {
+                        answer: String::new(),
+                        question: None,
+                        rubric: None,
+                        refs: Vec::new(),
+                    });
+                }
+            }
             Event::End(TagEnd::Item) => {
                 if item_depth == 0 {
                     return Err(NoteError::ItemOutsideSection);
                 }
-                item_depth -= 1;
-                if item_depth == 0 {
+                if item_depth == 2 {
+                    if let Some(item) = open.as_mut() {
+                        absorb_nested(item, &nested);
+                    }
+                    nested.clear();
+                } else if item_depth == 1 {
+                    let Some(mut item) = open.take() else {
+                        return Err(NoteError::ItemOutsideSection);
+                    };
                     let Some(level) = current else {
                         return Err(NoteError::ItemOutsideSection);
                     };
-                    let item = body[range].trim().to_owned();
+                    item.answer = item.answer.trim().to_owned();
                     push_item(&mut sections, level, item);
                 }
+                item_depth -= 1;
+            }
+            Event::Text(text) | Event::Code(text) if code_depth == 0 && heading.is_none() => {
+                append_item_text(&mut open, &mut nested, item_depth, &text);
+            }
+            Event::SoftBreak | Event::HardBreak if code_depth == 0 && heading.is_none() => {
+                append_item_text(&mut open, &mut nested, item_depth, "\n");
             }
             _ => {}
         }
@@ -208,10 +307,49 @@ fn level_of(name: &str) -> Option<Level> {
     }
 }
 
-fn push_item(sections: &mut [Section], level: Level, item: String) {
+fn push_item(sections: &mut [Section], level: Level, item: Item) {
     if let Some(section) = sections.iter_mut().find(|section| section.level == level) {
         section.items.push(item);
     }
+}
+
+fn append_item_text(open: &mut Option<Item>, nested: &mut String, item_depth: u32, text: &str) {
+    if item_depth >= 2 {
+        nested.push_str(text);
+    } else if let Some(item) = open.as_mut() {
+        item.answer.push_str(text);
+    }
+}
+
+fn absorb_nested(item: &mut Item, raw: &str) {
+    let text = raw.trim();
+    if let Some(rest) = text.strip_prefix("Q:") {
+        if item.question.is_none() {
+            item.question = Some(rest.trim().to_owned());
+        }
+    } else if let Some(rest) = text.strip_prefix("採点:") {
+        if item.rubric.is_none() {
+            item.rubric = Some(rest.trim().to_owned());
+        }
+    } else if let Some(rest) = text.strip_prefix("参照:") {
+        item.refs.extend(split_refs(rest));
+    }
+}
+
+fn split_refs(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(['、', ',', '，'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+}
+
+fn qkey(question: &str) -> String {
+    let nfc: String = question.nfc().collect();
+    let digest = Sha256::digest(nfc.as_bytes());
+    digest.iter().take(8).fold(String::new(), |mut out, byte| {
+        out.push_str(&format!("{byte:02x}"));
+        out
+    })
 }
 
 fn is_kebab(id: &str) -> bool {

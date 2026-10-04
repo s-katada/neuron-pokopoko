@@ -1,4 +1,4 @@
-mod note;
+pub mod note;
 mod schedule;
 
 use serde::Serialize;
