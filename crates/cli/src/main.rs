@@ -1,4 +1,8 @@
+use std::path::PathBuf;
+use std::process::ExitCode;
+
 use clap::{Parser, Subcommand};
+use poko_core::lint_vault;
 
 #[derive(Parser)]
 #[command(version)]
@@ -9,13 +13,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Lint,
+    /// vault のノートを検査する
+    Lint { dir: PathBuf },
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Lint => println!("lint: 未実装"),
+        Command::Lint { dir } => match lint_vault(&dir) {
+            Ok(report) if report.findings.is_empty() => {
+                println!("OK ({} notes, {} cards)", report.notes, report.cards);
+                ExitCode::SUCCESS
+            }
+            Ok(report) => {
+                for finding in report.findings {
+                    println!("{}: {}: {}", finding.path, finding.kind, finding.detail);
+                }
+                ExitCode::from(1)
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                ExitCode::from(1)
+            }
+        },
     }
 }
 

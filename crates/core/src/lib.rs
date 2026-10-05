@@ -1,9 +1,15 @@
+mod lint;
+pub mod note;
 mod schedule;
+mod taxonomy;
 
 use serde::Serialize;
 use ts_rs::TS;
 
+pub use lint::{Finding, LintError, LintKind, Report, lint_vault};
+pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
+pub use taxonomy::{TaxonRank, Taxonomy, TaxonomyError, load, validate};
 
 /// `/api/demo-schedule` のレスポンス。`cargo test` が `web/src/types/` に出す生成物はコミットする。
 #[derive(Debug, Clone, Copy, Serialize, TS)]

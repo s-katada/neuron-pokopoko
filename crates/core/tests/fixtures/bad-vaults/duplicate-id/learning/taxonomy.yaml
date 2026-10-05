@@ -1,0 +1,6 @@
+image-processing:
+  camera:
+    - exposure
+linux:
+  desktop:
+    - display-server
