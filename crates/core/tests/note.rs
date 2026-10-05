@@ -1,6 +1,6 @@
 use poko_core::{Level, Note, NoteError, parse_note};
 
-const GAIN: &str = "learning/画像処理/カメラ/露出/ゲイン.md";
+const GAIN: &str = "learning/image-processing/camera/exposure/gain.md";
 
 #[test]
 fn reads_id_and_path_classification() {
@@ -8,23 +8,25 @@ fn reads_id_and_path_classification() {
     let note = parse_note(GAIN, markdown).unwrap();
 
     assert_eq!(note.id, "gain");
+    assert!(note.aliases.is_empty());
     assert_eq!(
         note.sources,
         vec!["https://example.com/camera-gain".to_owned()]
     );
-    assert_eq!(note.major, "画像処理");
-    assert_eq!(note.middle, "カメラ");
-    assert_eq!(note.minor, "露出");
-    assert_eq!(note.concept, "ゲイン");
+    assert_eq!(note.major, "image-processing");
+    assert_eq!(note.middle, "camera");
+    assert_eq!(note.minor, "exposure");
+    assert_eq!(note.concept, "gain");
     assert_eq!(count(&note, Level::Beginner), 1);
 }
 
 #[test]
 fn gain_note_has_id_and_item_counts() {
-    let markdown = include_str!("fixtures/vault/learning/画像処理/カメラ/露出/ゲイン.md");
+    let markdown = include_str!("fixtures/vault/learning/image-processing/camera/exposure/gain.md");
     let note = parse_note(GAIN, markdown).unwrap();
 
     assert_eq!(note.id, "gain");
+    assert_eq!(note.aliases, vec!["ゲイン".to_owned()]);
     assert_eq!(count(&note, Level::Beginner), 1);
     assert_eq!(count(&note, Level::Intermediate), 2);
     assert_eq!(count(&note, Level::Advanced), 1);
@@ -42,6 +44,19 @@ fn missing_id_is_an_error() {
     let markdown = "---\nsources:\n  - https://example.com/camera-gain\n---\n# ゲイン\n";
     let err = parse_note(GAIN, markdown).unwrap_err();
     assert_eq!(err, NoteError::MissingId);
+}
+
+#[test]
+fn filename_must_match_id() {
+    let markdown = "---\nid: other\n---\n# ゲイン\n\n## 初級\n- 項目\n";
+    let err = parse_note(GAIN, markdown).unwrap_err();
+    assert_eq!(
+        err,
+        NoteError::FilenameIdMismatch {
+            filename: "gain".into(),
+            id: "other".into(),
+        }
+    );
 }
 
 #[test]

@@ -33,12 +33,11 @@ fn duplicate_id_names_the_id() {
 }
 
 #[test]
-fn duplicate_filename_names_the_concept() {
-    let report = lint_vault(&fixture("bad-vaults/duplicate-filename")).unwrap();
-    assert_eq!(report.findings.len(), 2);
-    assert!(report.findings.iter().all(|finding| {
-        finding.kind == LintKind::DuplicateFilename && finding.detail == "ゲイン"
-    }));
+fn filename_id_mismatch_names_both() {
+    let report = lint_vault(&fixture("bad-vaults/filename-id-mismatch")).unwrap();
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].kind, LintKind::FilenameIdMismatch);
+    assert_eq!(report.findings[0].detail, "gain != other");
 }
 
 #[test]
@@ -46,30 +45,26 @@ fn undefined_taxonomy_names_the_minor() {
     let report = lint_vault(&fixture("bad-vaults/undefined-taxonomy")).unwrap();
     assert_eq!(report.findings.len(), 1);
     assert_eq!(report.findings[0].kind, LintKind::UndefinedTaxonomy);
-    assert!(report.findings[0].detail.contains("未定義"));
+    assert!(report.findings[0].detail.contains("unknown"));
 }
 
 #[test]
-fn nfd_filename_is_non_nfc() {
-    let tmp = Tmp::new("nfd");
-    tmp.write("learning/taxonomy.yaml", TAXONOMY);
-    let ge = "\u{30B1}\u{3099}";
-    tmp.write(&format!("learning/画像処理/カメラ/露出/{ge}イン.md"), NOTE);
-    let report = lint_vault(&tmp.0).unwrap();
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.kind == LintKind::NonNfc)
-    );
+fn bad_path_segment_names_the_segment() {
+    let report = lint_vault(&fixture("bad-vaults/bad-path-segment")).unwrap();
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].kind, LintKind::BadSegment);
+    assert_eq!(report.findings[0].detail, "Image-processing");
 }
 
 #[test]
 fn missing_frontmatter_and_shallow_path() {
     let tmp = Tmp::new("shape");
     tmp.write("learning/taxonomy.yaml", TAXONOMY);
-    tmp.write("learning/画像処理/カメラ/露出/ゲイン.md", "本文だけ\n");
-    tmp.write("learning/直置き.md", NOTE);
+    tmp.write(
+        "learning/image-processing/camera/exposure/gain.md",
+        "本文だけ\n",
+    );
+    tmp.write("learning/shallow.md", NOTE);
     let report = lint_vault(&tmp.0).unwrap();
     assert!(report.findings.iter().any(|finding| {
         finding.kind == LintKind::Frontmatter && finding.detail.contains("frontmatter")

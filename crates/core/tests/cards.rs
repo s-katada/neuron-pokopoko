@@ -1,10 +1,10 @@
 use poko_core::note::Card;
 use poko_core::parse_note;
 
-const GAIN_PATH: &str = "learning/画像処理/カメラ/露出/ゲイン.md";
+const GAIN_PATH: &str = "learning/image-processing/camera/exposure/gain.md";
 
 fn gain() -> String {
-    include_str!("fixtures/vault/learning/画像処理/カメラ/露出/ゲイン.md").to_owned()
+    include_str!("fixtures/vault/learning/image-processing/camera/exposure/gain.md").to_owned()
 }
 
 #[test]
@@ -126,9 +126,12 @@ id: fence
   ```
   - Q: コードの外
 ";
-    let cards = parse_note("learning/画像処理/カメラ/露出/フェンス.md", markdown)
-        .unwrap()
-        .cards();
+    let cards = parse_note(
+        "learning/image-processing/camera/exposure/fence.md",
+        markdown,
+    )
+    .unwrap()
+    .cards();
     let questions: Vec<_> = cards.iter().map(|card| card.question.as_str()).collect();
     assert_eq!(questions, vec!["本物の質問？", "コードの外"]);
 }

@@ -1,5 +1,7 @@
 ---
 id: gain
+aliases:
+  - ゲイン
 sources:
   - https://example.com/camera-gain
 ---

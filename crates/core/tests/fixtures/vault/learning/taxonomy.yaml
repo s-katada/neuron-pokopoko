@@ -1,9 +1,9 @@
 # learning/taxonomy.yaml の形式
-画像処理:
-  カメラ:
-    - 露出
-  QR:
-    - 構造
-Linux:
-  デスクトップ:
-    - 表示サーバ
+image-processing:   # 画像処理
+  camera:           # カメラ
+    - exposure      # 露出
+  qr:               # QR コード
+    - structure     # 構造
+linux:
+  desktop:
+    - display-server

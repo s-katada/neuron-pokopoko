@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
-use unicode_normalization::UnicodeNormalization;
 
 use crate::note::{self, NoteError};
 use crate::taxonomy::{self, TaxonomyError};
@@ -18,9 +17,9 @@ pub struct Finding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LintKind {
     DuplicateId,
-    DuplicateFilename,
+    FilenameIdMismatch,
+    BadSegment,
     UndefinedTaxonomy,
-    NonNfc,
     Frontmatter,
     BadLayout,
 }
@@ -29,9 +28,9 @@ impl std::fmt::Display for LintKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::DuplicateId => "id の重複",
-            Self::DuplicateFilename => "ファイル名の重複",
+            Self::FilenameIdMismatch => "ファイル名が id と一致していない",
+            Self::BadSegment => "パス規則",
             Self::UndefinedTaxonomy => "taxonomy 未定義",
-            Self::NonNfc => "NFC 違反",
             Self::Frontmatter => "frontmatter",
             Self::BadLayout => "配置",
         })
@@ -64,20 +63,19 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
     let mut notes = 0;
     let mut cards = 0;
     let mut ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for path in paths {
         let rel = relative(root, &path);
-        if rel != nfc(&rel) {
-            push(&mut findings, &rel, LintKind::NonNfc, "NFC ではない");
-        }
-        let stem = rel.rsplit('/').next().unwrap_or(&rel);
-        let stem = stem.strip_suffix(".md").unwrap_or(stem);
-        names.entry(nfc(stem)).or_default().push(rel.clone());
-
-        if note::parse_location(&rel).is_err() {
-            push(&mut findings, &rel, LintKind::BadLayout, "3 階層ではない");
-            continue;
+        match note::parse_location(&rel) {
+            Err(NoteError::InvalidSegment(name)) => {
+                push(&mut findings, &rel, LintKind::BadSegment, &name);
+                continue;
+            }
+            Err(_) => {
+                push(&mut findings, &rel, LintKind::BadLayout, "3 階層ではない");
+                continue;
+            }
+            Ok(_) => {}
         }
         if let Err(TaxonomyError::Undefined { level, name }) = taxonomy::validate(&rel, &taxonomy) {
             push(
@@ -100,12 +98,19 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
             ) => {
                 push(&mut findings, &rel, LintKind::Frontmatter, &err.to_string());
             }
+            Err(NoteError::FilenameIdMismatch { filename, id }) => {
+                push(
+                    &mut findings,
+                    &rel,
+                    LintKind::FilenameIdMismatch,
+                    &format!("{filename} != {id}"),
+                );
+            }
             Err(_) => {}
         }
     }
 
     push_dups(&mut findings, ids, LintKind::DuplicateId);
-    push_dups(&mut findings, names, LintKind::DuplicateFilename);
     findings.sort_by(|a, b| (&a.path, a.kind, &a.detail).cmp(&(&b.path, b.kind, &b.detail)));
     Ok(Report {
         findings,
@@ -154,8 +159,4 @@ fn relative(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-fn nfc(text: &str) -> String {
-    text.nfc().collect()
 }

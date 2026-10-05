@@ -6,7 +6,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::note::{self, NoteError};
 
-/// 大分類 → 中分類 → 小分類。読み込み時に NFC へ揃える。
+/// major → middle → minor。読み込み時に NFC へ揃える。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Taxonomy {
     majors: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
@@ -24,8 +24,10 @@ pub enum TaxonRank {
 pub enum TaxonomyError {
     #[error("taxonomy が不正: {0}")]
     Invalid(String),
-    #[error("ノートのパスが learning/<大>/<中>/<小>/<概念>.md ではない")]
+    #[error("ノートのパスが learning/<major>/<middle>/<minor>/<id>.md ではない")]
     InvalidPath,
+    #[error("パスのセグメントが規則に合わない: {0}")]
+    InvalidSegment(String),
     #[error("未定義の{level}: {name}")]
     Undefined { level: TaxonRank, name: String },
 }
@@ -56,7 +58,7 @@ pub fn load(yaml: &str) -> Result<Taxonomy, TaxonomyError> {
     Ok(Taxonomy { majors })
 }
 
-/// パスを NFC で解析し、taxonomy にある大/中/小の組か確かめる。
+/// パスを解析し、taxonomy にある major/middle/minor の組か確かめる。
 pub fn validate(note_path: &str, taxonomy: &Taxonomy) -> Result<(), TaxonomyError> {
     let (major, middle, minor, _) = note::parse_location(note_path).map_err(map_path_error)?;
     let Some(middles) = taxonomy.majors.get(&major) else {
@@ -78,6 +80,7 @@ fn undefined(level: TaxonRank, name: String) -> TaxonomyError {
 fn map_path_error(err: NoteError) -> TaxonomyError {
     match err {
         NoteError::InvalidPath => TaxonomyError::InvalidPath,
+        NoteError::InvalidSegment(name) => TaxonomyError::InvalidSegment(name),
         other => TaxonomyError::Invalid(other.to_string()),
     }
 }

@@ -1,4 +1,4 @@
 ---
-id: gain-a
+id: gain
 ---
 ## 初級

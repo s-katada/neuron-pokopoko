@@ -1,4 +1,4 @@
 ---
-id: stray
+id: note
 ---
 ## 初級

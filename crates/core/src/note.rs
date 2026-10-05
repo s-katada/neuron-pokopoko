@@ -86,10 +86,11 @@ impl Note {
     }
 }
 
-/// 1 ノート。分類と概念名はパス由来。時刻は持たない。
+/// 1 ノート。分類と id はパス由来。時刻は持たない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub id: String,
+    pub aliases: Vec<String>,
     pub sources: Vec<String>,
     pub major: String,
     pub middle: String,
@@ -100,8 +101,12 @@ pub struct Note {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum NoteError {
-    #[error("ノートのパスが learning/<大>/<中>/<小>/<概念>.md ではない")]
+    #[error("ノートのパスが learning/<major>/<middle>/<minor>/<id>.md ではない")]
     InvalidPath,
+    #[error("パスのセグメントが規則に合わない: {0}")]
+    InvalidSegment(String),
+    #[error("ファイル名が id と一致しない: {filename} != {id}")]
+    FilenameIdMismatch { filename: String, id: String },
     #[error("frontmatter がない")]
     MissingFrontmatter,
     #[error("frontmatter が不正: {0}")]
@@ -118,21 +123,28 @@ pub enum NoteError {
     ItemOutsideSection,
 }
 
-/// `relative_path` は vault 相対の `learning/<大>/<中>/<小>/<概念>.md`。
+/// `relative_path` は vault 相対の `learning/<major>/<middle>/<minor>/<id>.md`。
 pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError> {
     let (major, middle, minor, concept) = parse_location(relative_path)?;
     let (yaml, body) = split_frontmatter(markdown)?;
     let frontmatter: Frontmatter = serde_yaml_ng::from_str(yaml)
         .map_err(|err| NoteError::InvalidFrontmatter(err.to_string()))?;
     let id = frontmatter.id.ok_or(NoteError::MissingId)?;
-    if !is_kebab(&id) {
+    if !is_segment(&id) {
         return Err(NoteError::InvalidFrontmatter(
-            "id は小文字ケバブケース".into(),
+            "id は小文字英数とハイフン".into(),
         ));
+    }
+    if concept != id {
+        return Err(NoteError::FilenameIdMismatch {
+            filename: concept,
+            id,
+        });
     }
     let sections = sections(body)?;
     Ok(Note {
         id,
+        aliases: frontmatter.aliases,
         sources: frontmatter.sources,
         major,
         middle,
@@ -146,11 +158,12 @@ pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError
 struct Frontmatter {
     id: Option<String>,
     #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
     sources: Vec<String>,
 }
 
 pub(crate) fn parse_location(path: &str) -> Result<(String, String, String, String), NoteError> {
-    let path: String = path.nfc().collect();
     let mut parts = path.split('/');
     let (Some("learning"), Some(major), Some(middle), Some(minor), Some(file)) = (
         parts.next(),
@@ -161,17 +174,17 @@ pub(crate) fn parse_location(path: &str) -> Result<(String, String, String, Stri
     ) else {
         return Err(NoteError::InvalidPath);
     };
-    if parts.next().is_some()
-        || major.is_empty()
-        || middle.is_empty()
-        || minor.is_empty()
-        || !file.ends_with(".md")
-    {
+    if parts.next().is_some() || !file.ends_with(".md") {
         return Err(NoteError::InvalidPath);
     }
     let concept = &file[..file.len() - 3];
-    if concept.is_empty() {
+    if major.is_empty() || middle.is_empty() || minor.is_empty() || concept.is_empty() {
         return Err(NoteError::InvalidPath);
+    }
+    for segment in [major, middle, minor, concept] {
+        if !is_segment(segment) {
+            return Err(NoteError::InvalidSegment(segment.to_owned()));
+        }
     }
     Ok((
         major.to_owned(),
@@ -353,12 +366,12 @@ fn qkey(question: &str) -> String {
     })
 }
 
-fn is_kebab(id: &str) -> bool {
-    !id.is_empty()
-        && id.split('-').all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        })
+/// 仕様の `^[a-z0-9][a-z0-9-]*$`。
+fn is_segment(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_lowercase() || first.is_ascii_digit() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
