@@ -63,6 +63,10 @@ fn clean_vaults_have_no_integration_findings() {
     let policy = lint_vault(&fixture("vault-policy")).unwrap();
     assert!(policy.findings.is_empty());
     assert_eq!(policy.notes, 6);
+    let integration = lint_vault(&fixture("vault-integration")).unwrap();
+    assert!(integration.findings.is_empty());
+    assert_eq!(integration.notes, 3);
+    assert_eq!(integration.cards, 8);
 }
 
 #[test]
