@@ -1,0 +1,3 @@
+# getrandom 0.4 の wasm_js バックエンドは feature と cfg の両方が必要(公式 docs)
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
