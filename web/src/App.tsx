@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { levelBadgeClass, levelLabel } from "./review/level";
 import { initialState, reduce, type Rating, type ReviewState } from "./review/state";
 import type { AnswerRequest } from "./types/AnswerRequest";
 import type { NextResponse } from "./types/NextResponse";
@@ -148,7 +149,12 @@ export default function App() {
 function CardFace({ card, children }: { card: ReviewCard; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-6">
-      <p className="text-sm text-neutral-500">{card.title}</p>
+      <p className="flex items-center gap-2 text-sm text-neutral-500">
+        <span>{card.title}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs ${levelBadgeClass(card.level)}`}>
+          {levelLabel(card.level)}
+        </span>
+      </p>
       <h1 className="text-2xl font-semibold">{card.question}</h1>
       {children}
     </section>

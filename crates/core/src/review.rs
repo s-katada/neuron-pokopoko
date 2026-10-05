@@ -1,42 +1,88 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::day::{NEW_CARDS_PER_DAY, study_day_start};
+use crate::day::{
+    NEW_CARDS_PER_DAY, UNLOCK_ADVANCED_DAYS, UNLOCK_INTERMEDIATE_DAYS, study_day_start,
+};
 use crate::schedule::{Card, Memory, Rating, ScheduleError, schedule};
 use crate::sync::{Statement, Value};
 
 const NEXT_CARD: &str = "\
-WITH intake AS (
+WITH day AS (SELECT ? AS start),
+intake AS (
   SELECT count(*) AS cnt FROM (
-    SELECT card_key FROM reviews GROUP BY card_key HAVING min(reviewed_at) >= ?
+    SELECT card_key FROM reviews GROUP BY card_key HAVING min(reviewed_at) >= (SELECT start FROM day)
   )
+),
+gate AS (
+  SELECT nt.id AS note_id,
+    NOT EXISTS (
+      SELECT 1 FROM cards b
+      WHERE b.note_id = nt.id AND b.retired_at IS NULL AND b.level = 'beginner'
+        AND (b.stability IS NULL OR b.stability < ?)
+    ) AS mid_ok,
+    NOT EXISTS (
+      SELECT 1 FROM cards m
+      WHERE m.note_id = nt.id AND m.retired_at IS NULL AND m.level = 'intermediate'
+        AND (m.stability IS NULL OR m.stability < ?)
+    ) AS adv_ok
+  FROM notes nt WHERE nt.deleted_at IS NULL
+),
+touched AS (
+  SELECT DISTINCT c.note_id, r.card_key
+  FROM reviews r JOIN cards c ON c.stable_key = r.card_key
+  WHERE r.reviewed_at >= (SELECT start FROM day)
+),
+last_cat AS (
+  SELECT nt.major || '/' || nt.middle || '/' || nt.minor AS cat
+  FROM reviews r
+  JOIN cards c ON c.stable_key = r.card_key
+  JOIN notes nt ON nt.id = c.note_id
+  ORDER BY r.reviewed_at DESC, r.id DESC
+  LIMIT 1
 ),
 due AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
-         0 AS pri, c.due_at AS ord1, c.stable_key AS ord2
+         0 AS pri, c.due_at AS ord1, c.stable_key AS ord2,
+         nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id
   WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL
-    AND c.level = 'beginner' AND c.fsrs_state = 'review' AND c.due_at <= ?
+    AND c.level IN ('beginner', 'intermediate', 'advanced')
+    AND c.fsrs_state = 'review' AND c.due_at <= ?
+    AND NOT EXISTS (
+      SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
+    )
 ),
 fresh AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
-         1 AS pri, c.created_at AS ord1, c.stable_key AS ord2
-  FROM cards c JOIN notes nt ON nt.id = c.note_id
+         1 AS pri, c.created_at AS ord1, c.stable_key AS ord2,
+         nt.major || '/' || nt.middle || '/' || nt.minor AS cat
+  FROM cards c JOIN notes nt ON nt.id = c.note_id JOIN gate g ON g.note_id = c.note_id
   WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL
-    AND c.level = 'beginner' AND c.fsrs_state = 'new'
+    AND c.fsrs_state = 'new'
     AND (SELECT cnt FROM intake) < ?
+    AND (
+      c.level = 'beginner'
+      OR (c.level = 'intermediate' AND g.mid_ok)
+      OR (c.level = 'advanced' AND g.mid_ok AND g.adv_ok)
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
+    )
 )
 SELECT stable_key, note_id, title, question, answer, level
 FROM (SELECT * FROM due UNION ALL SELECT * FROM fresh)
-ORDER BY pri, ord1, ord2
+ORDER BY (cat = coalesce((SELECT cat FROM last_cat), '')), pri, ord1, ord2
 LIMIT 1";
 
-/// 次に出すカードを 1 件選ぶ。params は学習日の開始、now、新規枠。
+/// 次に出すカードを 1 件選ぶ。params は学習日の開始、中級の解禁日数、上級の解禁日数、now、新規枠。
 pub fn next_card_query(now_unix: i64) -> Statement {
     Statement {
         sql: NEXT_CARD.to_owned(),
         params: vec![
             Value::Integer(study_day_start(now_unix)),
+            Value::Real(UNLOCK_INTERMEDIATE_DAYS),
+            Value::Real(UNLOCK_ADVANCED_DAYS),
             Value::Integer(now_unix),
             Value::Integer(i64::try_from(NEW_CARDS_PER_DAY).expect("新規枠は i64 に収まる")),
         ],

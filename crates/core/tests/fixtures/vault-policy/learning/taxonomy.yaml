@@ -1,0 +1,7 @@
+# learning/taxonomy.yaml の形式
+image-processing:   # 画像処理
+  camera:           # カメラ
+    - exposure      # 露出
+linux:              # Linux
+  desktop:          # デスクトップ
+    - display-server

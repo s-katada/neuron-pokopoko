@@ -1,6 +1,7 @@
 use poko_core::{
-    CardState, NEW_CARDS_PER_DAY, Rating, SyncCard, SyncNote, Value, answer_statements,
-    card_state_query, next_card_query, study_day_start, upsert_statements,
+    CardState, NEW_CARDS_PER_DAY, Rating, SyncCard, SyncNote, UNLOCK_ADVANCED_DAYS,
+    UNLOCK_INTERMEDIATE_DAYS, Value, answer_statements, card_state_query, next_card_query,
+    study_day_start, upsert_statements,
 };
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
@@ -87,6 +88,14 @@ fn draw(conn: &Connection, now: i64) -> Option<Drawn> {
     .unwrap()
 }
 
+fn park(conn: &Connection, level: &str, stability: f64) {
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = ?1, due_at = ?2 WHERE level = ?3 AND retired_at IS NULL",
+        (stability, NOW + 86_400, level),
+    )
+    .unwrap();
+}
+
 fn introduce(conn: &Connection, key: &str, at: i64) {
     conn.execute(
         "INSERT INTO reviews (card_key, rating, reviewed_at, interval_days, stability, difficulty) VALUES (?1, 'good', ?2, 1.0, 1.0, 5.0)",
@@ -118,7 +127,7 @@ fn answer(conn: &Connection, key: &str, rating: Rating) {
 }
 
 #[test]
-fn good_answer_schedules_review_and_draws_the_next_new_card() {
+fn good_answer_schedules_review_and_hides_same_note_cards() {
     let conn = db();
     let state = load_state(&conn, "b1");
     assert_eq!(state.fsrs_state, "new");
@@ -136,7 +145,7 @@ fn good_answer_schedules_review_and_draws_the_next_new_card() {
         .unwrap();
     assert_eq!(fsrs_state, "review");
     assert_eq!(due_at, planned.due_at);
-    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "b2");
+    assert!(draw(&conn, NOW).is_none());
 }
 
 #[test]
@@ -196,6 +205,8 @@ fn no_reviews_draws_the_first_new_beginner() {
         statement.params,
         vec![
             Value::Integer(study_day_start(NOW)),
+            Value::Real(UNLOCK_INTERMEDIATE_DAYS),
+            Value::Real(UNLOCK_ADVANCED_DAYS),
             Value::Integer(NOW),
             Value::Integer(i64::try_from(NEW_CARDS_PER_DAY).unwrap()),
         ]
@@ -249,7 +260,7 @@ fn due_review_comes_before_a_new_card() {
 }
 
 #[test]
-fn retired_and_intermediate_cards_are_never_drawn() {
+fn retired_beginner_is_skipped_and_due_intermediate_is_drawn() {
     let conn = db();
     conn.execute(
         "UPDATE cards SET retired_at = ?1, fsrs_state = 'review', due_at = ?1 WHERE stable_key = 'b1'",
@@ -261,11 +272,339 @@ fn retired_and_intermediate_cards_are_never_drawn() {
         [NOW],
     )
     .unwrap();
-    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "b2");
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "mid");
     conn.execute(
         "UPDATE cards SET retired_at = ?1 WHERE level = 'beginner'",
         [NOW],
     )
     .unwrap();
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "mid");
+}
+
+#[test]
+fn intermediate_new_waits_for_beginner_stability() {
+    let conn = db();
+    park(&conn, "beginner", 6.99);
     assert!(draw(&conn, NOW).is_none());
+    park(&conn, "beginner", 7.0);
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "mid");
+    assert_eq!(drawn.level, "intermediate");
+}
+
+#[test]
+fn advanced_new_waits_for_intermediate_stability() {
+    let conn = db();
+    park(&conn, "beginner", 7.0);
+    park(&conn, "intermediate", 20.99);
+    conn.execute(
+        "INSERT INTO cards (stable_key, note_id, level, question, answer, refs, created_at, updated_at) VALUES ('adv', 'gain', 'advanced', 'q-adv', 'a-adv', '[]', ?1, ?1)",
+        [NOW],
+    )
+    .unwrap();
+    assert!(draw(&conn, NOW).is_none());
+    park(&conn, "intermediate", 21.0);
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "adv");
+    assert_eq!(drawn.level, "advanced");
+}
+
+#[test]
+fn note_without_beginners_draws_intermediate_new() {
+    let conn = db();
+    conn.execute(
+        "UPDATE cards SET retired_at = ?1 WHERE level = 'beginner'",
+        [NOW],
+    )
+    .unwrap();
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "mid");
+    assert_eq!(drawn.level, "intermediate");
+}
+
+#[test]
+fn new_card_quota_counts_across_levels() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_note(
+        &conn,
+        "beg",
+        &[
+            ("b-a", "beginner"),
+            ("b-b", "beginner"),
+            ("b-c", "beginner"),
+            ("b-left", "beginner"),
+        ],
+    );
+    push_note(
+        &conn,
+        "midn",
+        &[
+            ("m-a", "intermediate"),
+            ("m-b", "intermediate"),
+            ("m-left", "intermediate"),
+        ],
+    );
+    push_note(
+        &conn,
+        "advn",
+        &[("m-done", "intermediate"), ("a-left", "advanced")],
+    );
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = 21.0, due_at = ?1 WHERE stable_key = 'm-done'",
+        [NOW + 86_400],
+    )
+    .unwrap();
+    for key in ["b-a", "b-b", "b-c", "m-a"] {
+        introduce(&conn, key, NOW);
+    }
+    assert!(draw(&conn, NOW).is_some());
+    introduce(&conn, "m-b", NOW);
+    assert!(draw(&conn, NOW).is_none());
+    let mut levels: Vec<String> = conn
+        .prepare("SELECT DISTINCT level FROM cards WHERE retired_at IS NULL AND fsrs_state = 'new' ORDER BY level")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|level| level.unwrap())
+        .collect();
+    levels.sort();
+    assert_eq!(
+        levels,
+        vec![
+            "advanced".to_owned(),
+            "beginner".to_owned(),
+            "intermediate".to_owned()
+        ]
+    );
+}
+
+fn push_note(conn: &Connection, id: &str, keys: &[(&str, &str)]) {
+    push_cat(
+        conn,
+        id,
+        "image-processing",
+        "camera",
+        "exposure",
+        keys,
+        NOW,
+    );
+}
+
+fn push_cat(
+    conn: &Connection,
+    id: &str,
+    major: &str,
+    middle: &str,
+    minor: &str,
+    keys: &[(&str, &str)],
+    at: i64,
+) {
+    let note = SyncNote {
+        id: id.into(),
+        path: format!("learning/{major}/{middle}/{minor}/{id}.md"),
+        title: id.into(),
+        major: major.into(),
+        middle: middle.into(),
+        minor: minor.into(),
+        content_hash: "hash".into(),
+        cards: keys.iter().map(|(key, level)| card(key, level)).collect(),
+    };
+    apply(conn, &upsert_statements(&[&note], at));
+}
+
+#[test]
+fn answering_hides_the_sibling_new_card_until_the_next_study_day() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_note(&conn, "sib", &[("a", "beginner"), ("b", "beginner")]);
+    push_note(&conn, "other", &[("o", "beginner")]);
+    answer(&conn, "a", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "o");
+
+    answer(&conn, "a", Rating::Again);
+    conn.execute("UPDATE cards SET due_at = ?1 WHERE stable_key = 'a'", [NOW])
+        .unwrap();
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "a");
+
+    conn.execute(
+        "UPDATE cards SET due_at = ?1 WHERE stable_key = 'a'",
+        [NOW + 86_400 * 10],
+    )
+    .unwrap();
+    let morning = study_day_start(NOW) + 86_400;
+    assert_eq!(draw(&conn, morning).unwrap().stable_key, "b");
+}
+
+#[test]
+fn answering_a_due_card_hides_a_due_sibling() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_note(&conn, "sib", &[("a", "beginner"), ("c", "intermediate")]);
+    push_note(&conn, "other", &[("o", "beginner")]);
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1 WHERE stable_key IN ('a', 'c', 'o')",
+        [NOW],
+    )
+    .unwrap();
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "a");
+    answer(&conn, "a", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "o");
+}
+
+#[test]
+fn due_intermediate_review_ignores_a_locked_beginner() {
+    let conn = db();
+    park(&conn, "beginner", 6.99);
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1, stability = 1.0 WHERE stable_key = 'mid'",
+        [NOW],
+    )
+    .unwrap();
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "mid");
+    assert_eq!(drawn.level, "intermediate");
+}
+
+#[test]
+fn answering_in_one_category_draws_the_other_category_next() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "x-old",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xa", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "x-rest",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xb", "beginner")],
+        NOW + 1,
+    );
+    push_cat(
+        &conn,
+        "y",
+        "image-processing",
+        "lens",
+        "focus",
+        &[("yc", "beginner")],
+        NOW + 2,
+    );
+    answer(&conn, "xa", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "yc");
+}
+
+#[test]
+fn same_category_is_drawn_when_no_other_category_remains() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "x-old",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xa", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "x-rest",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xb", "beginner")],
+        NOW + 1,
+    );
+    answer(&conn, "xa", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "xb");
+}
+
+#[test]
+fn shared_minor_name_is_still_a_different_category() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "p-old",
+        "a",
+        "b",
+        "basics",
+        &[("p-old", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "p-rest",
+        "a",
+        "b",
+        "basics",
+        &[("p-next", "beginner")],
+        NOW + 1,
+    );
+    push_cat(
+        &conn,
+        "q",
+        "c",
+        "d",
+        "basics",
+        &[("q", "beginner")],
+        NOW + 2,
+    );
+    answer(&conn, "p-old", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "q");
+}
+
+#[test]
+fn different_category_new_card_precedes_same_category_due_review() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "x-reviewed",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xr", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "x-due",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xd", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "y-new",
+        "image-processing",
+        "lens",
+        "focus",
+        &[("yn", "beginner")],
+        NOW + 1,
+    );
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1 WHERE stable_key = 'xd'",
+        [NOW],
+    )
+    .unwrap();
+    answer(&conn, "xr", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "yn");
 }
