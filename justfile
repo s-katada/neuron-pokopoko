@@ -62,3 +62,7 @@ e2e-integration:
 # 一時 D1 で統計 API を通す。ci には入れない
 e2e-stats:
     bash scripts/e2e-stats.sh
+
+# 本番が Access で守られ、トークンで health と manifest に届くか確かめる。ci には入れない
+verify-prod *args:
+    bash scripts/verify-prod.sh {{args}}
