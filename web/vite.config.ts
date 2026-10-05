@@ -16,4 +16,7 @@ export default defineConfig({
   fmt: {
     ignorePatterns: ["src/types/**"],
   },
+  test: {
+    watch: false,
+  },
 });

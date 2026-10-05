@@ -10,10 +10,12 @@ use axum::{
     routing::{get, post},
 };
 use poko_core::{
-    Card, DemoSchedule, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry,
-    Rating, Statement, SyncNote, Value, delete_statements, schedule, statements_for,
-    upsert_statements,
+    AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
+    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCard, Statement,
+    SyncNote, Value, answer_statements, card_state_query, delete_statements, next_card_query,
+    statements_for, upsert_statements,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tower_service::Service;
 use worker::wasm_bindgen::JsValue;
@@ -30,10 +32,11 @@ fn router(env: Env) -> Result<Router> {
     };
     Ok(Router::new()
         .route("/api/health", get(health))
-        .route("/api/demo-schedule", get(demo_schedule))
         .route("/api/sync/manifest", get(sync_manifest))
         .route("/api/sync/notes", post(sync_notes))
         .route("/api/sync/delete", post(sync_delete))
+        .route("/api/review/next", get(review_next))
+        .route("/api/review/answer", post(review_answer))
         .with_state(state))
 }
 
@@ -44,18 +47,6 @@ struct HealthBody {
 
 async fn health() -> Json<HealthBody> {
     Json(HealthBody { ok: true })
-}
-
-async fn demo_schedule() -> Result<Json<DemoSchedule>, StatusCode> {
-    let now_unix = now_unix();
-    let scheduled = schedule(Card::New, Rating::Good, now_unix)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(DemoSchedule {
-        rating: "good",
-        interval_days: scheduled.interval_days,
-        stability: scheduled.memory.stability,
-        difficulty: scheduled.memory.difficulty,
-    }))
 }
 
 #[derive(Deserialize)]
@@ -150,6 +141,64 @@ async fn sync_delete(
         return server_error(err);
     }
     Json(DeleteResult { deleted }).into_response()
+}
+
+#[worker::send]
+async fn review_next(State(state): State<AppState>) -> Response {
+    match query_first::<ReviewCard>(&state.db, &next_card_query(now_unix())).await {
+        Ok(card) => Json(NextResponse { card }).into_response(),
+        Err(err) => server_error(err),
+    }
+}
+
+#[worker::send]
+async fn review_answer(
+    State(state): State<AppState>,
+    body: Result<Json<AnswerRequest>, JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let rating = match Rating::parse(&body.rating) {
+        Some(rating) => rating,
+        None => return (StatusCode::BAD_REQUEST, "rating が不正".to_owned()).into_response(),
+    };
+    let card_state =
+        match query_first::<CardState>(&state.db, &card_state_query(&body.stable_key)).await {
+            Ok(Some(card_state)) => card_state,
+            Ok(None) => return (StatusCode::NOT_FOUND, "カードがない".to_owned()).into_response(),
+            Err(err) => return server_error(err),
+        };
+    let answer = match answer_statements(&body.stable_key, &card_state, rating, now_unix()) {
+        Ok(answer) => answer,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "スケジュールに失敗した".to_owned(),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = execute_batch(&state.db, &answer.statements).await {
+        return server_error(err);
+    }
+    Json(AnswerResponse {
+        interval_days: answer.interval_days,
+        due_at: answer.due_at,
+    })
+    .into_response()
+}
+
+async fn query_first<T: DeserializeOwned>(
+    db: &D1Database,
+    statement: &Statement,
+) -> Result<Option<T>> {
+    let params: Vec<JsValue> = statement.params.iter().map(to_d1).collect();
+    db.prepare(statement.sql.as_str())
+        .bind(&params)?
+        .first(None)
+        .await
 }
 
 async fn execute_batch(db: &D1Database, statements: &[Statement]) -> Result<()> {

@@ -34,3 +34,7 @@ ci: fmt-check lint lint-wasm test build-wasm
 # 一時 D1 で fixture vault の同期を通す。ci には入れない
 e2e-sync:
     bash scripts/e2e-sync.sh
+
+# 一時 D1 で fixture vault の出題を通す。ci には入れない
+e2e-review:
+    bash scripts/e2e-review.sh

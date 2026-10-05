@@ -25,6 +25,7 @@
 
 - core は wasm32 と native の両方で動かす: 時刻は `now` を引数で受け取る。core 内で `SystemTime::now` や chrono の now を呼ばない
 - 日付境界は JST(UTC+9)の 04:00。UTC 変換(`toISOString` 相当)で日付を作らない
+- 出題・新規枠・統計の「1 日」は `study_day_start` だけを使う
 - D1 Free: 1 呼び出し 50 クエリ / 1 クエリ 100 バインド。N+1 とバルク insert の分割に注意
 - Worker Free: CPU 10ms/req。重いパース・差分計算は CLI 側でやる
 - pnpm 11+: overrides と allowBuilds は `pnpm-workspace.yaml` に書く(package.json の pnpm キーは読まれない)
