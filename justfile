@@ -20,6 +20,10 @@ lint:
 lint-wasm:
     cargo clippy -p poko-worker --target wasm32-unknown-unknown -- -D warnings
 
+# GitHub Actions のワークフローを検査する
+lint-actions:
+    actionlint
+
 # テストを実行する
 test:
     cargo test
@@ -29,7 +33,7 @@ build-wasm:
     cargo build -p poko-worker --target wasm32-unknown-unknown
 
 # CI と同じ検証
-ci: fmt-check lint lint-wasm test build-wasm
+ci: fmt-check lint lint-wasm lint-actions test build-wasm
 
 # SVG から PWA アイコンを生成する
 icons:
