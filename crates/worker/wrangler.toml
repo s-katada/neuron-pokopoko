@@ -1,9 +1,20 @@
 name = "neuron-pokopoko"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
 
 [build]
 command = "cargo install -q worker-build && worker-build --release"
+
+# navigate はアセット優先で index.html が返る。/api は Worker 直行にする。
+[assets]
+directory = "../../web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = [ "/api/*" ]
+
+[observability]
+enabled = true
 
 [dev]
 port = 8787
