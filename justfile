@@ -42,3 +42,7 @@ e2e-review:
 # 一時 D1 で出題ポリシーを通す。ci には入れない
 e2e-policy:
     bash scripts/e2e-policy.sh
+
+# 一時 D1 で中級の自由記述を通す。ci には入れない
+e2e-intermediate:
+    bash scripts/e2e-intermediate.sh
