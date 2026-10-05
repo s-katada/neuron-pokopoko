@@ -1,7 +1,9 @@
+use std::path::PathBuf;
+
 use poko_core::{
-    CardState, NEW_CARDS_PER_DAY, Rating, SyncCard, SyncNote, UNLOCK_ADVANCED_DAYS,
-    UNLOCK_INTERMEDIATE_DAYS, Value, answer_statements, card_state_query, next_card_query,
-    study_day_start, upsert_statements,
+    CardState, NEW_CARDS_PER_DAY, Rating, ReviewCard, ReviewCardRow, SyncCard, SyncNote,
+    UNLOCK_ADVANCED_DAYS, UNLOCK_INTERMEDIATE_DAYS, Value, answer_statements, card_state_query,
+    collect, next_card_query, review_card_from_row, study_day_start, upsert_statements,
 };
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
@@ -649,6 +651,89 @@ fn next_card_returns_rubric_for_an_unlocked_intermediate_and_none_for_a_beginner
     let (level, rubric) = draw_level_and_rubric(&conn, NOW);
     assert_eq!(level, "intermediate");
     assert_eq!(rubric.as_deref(), Some("被写界深度が浅くなる"));
+}
+
+#[test]
+fn integration_stays_hidden_until_every_referenced_note_unlocks_advanced() {
+    let conn = integration_db();
+    assert!(draw_card(&conn, NOW).is_none());
+
+    conn.execute(
+        "UPDATE cards SET stability = 21.0 WHERE note_id = 'i3' AND level = 'intermediate'",
+        [],
+    )
+    .unwrap();
+    let card = draw_card(&conn, NOW).unwrap();
+    assert_eq!(card.note_id, "i1");
+    assert_eq!(card.level, "integration");
+    assert_eq!(
+        card.ref_titles,
+        vec!["ゲイン側".to_owned(), "照明側".to_owned()]
+    );
+
+    conn.execute("UPDATE notes SET deleted_at = ?1 WHERE id = 'i3'", [NOW])
+        .unwrap();
+    assert!(draw_card(&conn, NOW).is_none());
+
+    conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = 'i3'", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE cards SET stability = 20.99 WHERE note_id = 'i1' AND level = 'intermediate'",
+        [],
+    )
+    .unwrap();
+    assert!(draw_card(&conn, NOW).is_none());
+}
+
+fn integration_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    common::apply_migrations(&conn);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vault-integration");
+    let notes = collect(&root).unwrap();
+    let borrowed: Vec<_> = notes.iter().collect();
+    apply(&conn, &upsert_statements(&borrowed, NOW));
+    let future = NOW + 86_400 * 400;
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = 7.0, due_at = ?1 WHERE level = 'beginner'",
+        [future],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = 21.0, due_at = ?1 WHERE note_id IN ('i1', 'i2') AND level = 'intermediate'",
+        [future],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = 20.99, due_at = ?1 WHERE note_id = 'i3' AND level = 'intermediate'",
+        [future],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1 WHERE note_id = 'i2' AND level = 'advanced'",
+        [future],
+    )
+    .unwrap();
+    conn
+}
+
+fn draw_card(conn: &Connection, now: i64) -> Option<ReviewCard> {
+    let statement = next_card_query(now);
+    let params: Vec<_> = statement.params.iter().map(to_sql).collect();
+    conn.query_row(&statement.sql, params_from_iter(params), |row| {
+        review_card_from_row(ReviewCardRow {
+            stable_key: row.get(0)?,
+            note_id: row.get(1)?,
+            title: row.get(2)?,
+            question: row.get(3)?,
+            answer: row.get(4)?,
+            level: row.get(5)?,
+            rubric: row.get(6)?,
+            ref_titles: row.get(7)?,
+        })
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
+    })
+    .optional()
+    .unwrap()
 }
 
 fn draw_level_and_rubric(conn: &Connection, now: i64) -> (String, Option<String>) {

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::note::{self, NoteError};
+use crate::note::{self, Level, Note, NoteError};
 use crate::taxonomy::{self, TaxonomyError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +22,22 @@ pub enum LintKind {
     UndefinedTaxonomy,
     Frontmatter,
     BadLayout,
+    IntegrationRef(IntegrationRefReason),
+}
+
+/// 統合カードの参照が、どの規則に反したか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntegrationRefReason {
+    /// 件数が 1〜2 でない。
+    Count,
+    /// 参照先の id が vault に無い。
+    Missing,
+    /// 参照先が別の分類(major/middle/minor)。
+    OtherClass,
+    /// 自ノートを参照している。
+    SelfRef,
+    /// 同じ id を 2 回以上参照している。
+    Duplicate,
 }
 
 impl std::fmt::Display for LintKind {
@@ -33,6 +49,7 @@ impl std::fmt::Display for LintKind {
             Self::UndefinedTaxonomy => "taxonomy 未定義",
             Self::Frontmatter => "frontmatter",
             Self::BadLayout => "配置",
+            Self::IntegrationRef(_) => "統合カードの参照",
         })
     }
 }
@@ -61,6 +78,7 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
     let mut notes = 0;
     let mut cards = 0;
     let mut ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut parsed: Vec<(String, Note)> = Vec::new();
 
     for path in paths {
         let rel = crate::vault::relative(root, &path);
@@ -87,7 +105,8 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
             Ok(note) => {
                 notes += 1;
                 cards += note.cards().len();
-                ids.entry(note.id).or_default().push(rel);
+                ids.entry(note.id.clone()).or_default().push(rel.clone());
+                parsed.push((rel, note));
             }
             Err(
                 err @ (NoteError::MissingFrontmatter
@@ -108,6 +127,7 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
         }
     }
 
+    push_integration_refs(&mut findings, &parsed);
     push_dups(&mut findings, ids, LintKind::DuplicateId);
     findings.sort_by(|a, b| (&a.path, a.kind, &a.detail).cmp(&(&b.path, b.kind, &b.detail)));
     Ok(Report {
@@ -115,6 +135,77 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
         notes,
         cards,
     })
+}
+
+fn push_integration_refs(findings: &mut Vec<Finding>, notes: &[(String, Note)]) {
+    let mut by_id: BTreeMap<&str, Vec<&Note>> = BTreeMap::new();
+    for (_, note) in notes {
+        by_id.entry(note.id.as_str()).or_default().push(note);
+    }
+    for (path, note) in notes {
+        for card in note.cards() {
+            if card.level != Level::Integration {
+                continue;
+            }
+            for (reason, detail) in ref_problems(note, &card.refs, &by_id) {
+                push(findings, path, LintKind::IntegrationRef(reason), &detail);
+            }
+        }
+    }
+}
+
+fn ref_problems(
+    note: &Note,
+    refs: &[String],
+    by_id: &BTreeMap<&str, Vec<&Note>>,
+) -> Vec<(IntegrationRefReason, String)> {
+    let mut problems = Vec::new();
+    if !(1..=2).contains(&refs.len()) {
+        problems.push((IntegrationRefReason::Count, format!("{} 件", refs.len())));
+    }
+    let mut seen = BTreeMap::<&str, usize>::new();
+    for id in refs {
+        *seen.entry(id).or_default() += 1;
+    }
+    for id in seen.keys() {
+        if *id == note.id {
+            continue;
+        }
+        if by_id.get(id).is_none_or(|targets| targets.is_empty()) {
+            problems.push((IntegrationRefReason::Missing, format!("存在しない: {id}")));
+        }
+    }
+    for id in seen.keys() {
+        if *id == note.id {
+            continue;
+        }
+        let Some(targets) = by_id.get(id) else {
+            continue;
+        };
+        if targets.is_empty() {
+            continue;
+        }
+        let same = targets.iter().any(|target| same_class(note, target));
+        if !same {
+            problems.push((IntegrationRefReason::OtherClass, format!("別の分類: {id}")));
+        }
+    }
+    if seen.contains_key(note.id.as_str()) {
+        problems.push((
+            IntegrationRefReason::SelfRef,
+            format!("自ノート: {}", note.id),
+        ));
+    }
+    for (id, count) in &seen {
+        if *count >= 2 {
+            problems.push((IntegrationRefReason::Duplicate, format!("重複: {id}")));
+        }
+    }
+    problems
+}
+
+fn same_class(note: &Note, other: &Note) -> bool {
+    note.major == other.major && note.middle == other.middle && note.minor == other.minor
 }
 
 fn push(findings: &mut Vec<Finding>, path: &str, kind: LintKind, detail: &str) {

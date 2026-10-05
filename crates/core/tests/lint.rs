@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use poko_core::{LintKind, lint_vault};
+use poko_core::{IntegrationRefReason, LintKind, lint_vault};
 
 const TAXONOMY: &str = include_str!("fixtures/vault/learning/taxonomy.yaml");
 const NOTE: &str = "---\nid: gain\n---\n\n## 初級\n";
@@ -54,6 +54,64 @@ fn bad_path_segment_names_the_segment() {
     assert_eq!(report.findings.len(), 1);
     assert_eq!(report.findings[0].kind, LintKind::BadSegment);
     assert_eq!(report.findings[0].detail, "Image-processing");
+}
+
+#[test]
+fn clean_vaults_have_no_integration_findings() {
+    let gain = lint_vault(&fixture("vault")).unwrap();
+    assert!(gain.findings.is_empty());
+    let policy = lint_vault(&fixture("vault-policy")).unwrap();
+    assert!(policy.findings.is_empty());
+    assert_eq!(policy.notes, 6);
+    let integration = lint_vault(&fixture("vault-integration")).unwrap();
+    assert!(integration.findings.is_empty());
+    assert_eq!(integration.notes, 3);
+    assert_eq!(integration.cards, 8);
+}
+
+#[test]
+fn integration_ref_rules_name_the_reason() {
+    assert_eq!(
+        reasons("integration-count"),
+        vec![
+            (IntegrationRefReason::Count, "0 件".to_owned()),
+            (IntegrationRefReason::Count, "3 件".to_owned()),
+        ]
+    );
+    assert_eq!(
+        reasons("integration-missing"),
+        vec![(
+            IntegrationRefReason::Missing,
+            "存在しない: ghost".to_owned()
+        )]
+    );
+    assert_eq!(
+        reasons("integration-other-class"),
+        vec![(
+            IntegrationRefReason::OtherClass,
+            "別の分類: here".to_owned()
+        )]
+    );
+    assert_eq!(
+        reasons("integration-self"),
+        vec![(IntegrationRefReason::SelfRef, "自ノート: mine".to_owned())]
+    );
+    assert_eq!(
+        reasons("integration-duplicate"),
+        vec![(IntegrationRefReason::Duplicate, "重複: peer".to_owned())]
+    );
+}
+
+fn reasons(name: &str) -> Vec<(IntegrationRefReason, String)> {
+    lint_vault(&fixture(&format!("bad-vaults/{name}")))
+        .unwrap()
+        .findings
+        .into_iter()
+        .map(|finding| match finding.kind {
+            LintKind::IntegrationRef(reason) => (reason, finding.detail),
+            other => panic!("{other:?}: {}", finding.detail),
+        })
+        .collect()
 }
 
 #[test]

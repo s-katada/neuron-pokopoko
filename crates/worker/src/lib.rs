@@ -11,9 +11,9 @@ use axum::{
 };
 use poko_core::{
     AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
-    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCard, Statement,
+    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCardRow, Statement,
     SyncNote, Value, answer_statements, card_state_query, delete_statements, next_card_query,
-    normalize_response, statements_for, upsert_statements,
+    normalize_response, review_card_from_row, statements_for, upsert_statements,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -145,8 +145,12 @@ async fn sync_delete(
 
 #[worker::send]
 async fn review_next(State(state): State<AppState>) -> Response {
-    match query_first::<ReviewCard>(&state.db, &next_card_query(now_unix())).await {
-        Ok(card) => Json(NextResponse { card }).into_response(),
+    match query_first::<ReviewCardRow>(&state.db, &next_card_query(now_unix())).await {
+        Ok(Some(row)) => match review_card_from_row(row) {
+            Ok(card) => Json(NextResponse { card: Some(card) }).into_response(),
+            Err(err) => server_error(err),
+        },
+        Ok(None) => Json(NextResponse { card: None }).into_response(),
         Err(err) => server_error(err),
     }
 }

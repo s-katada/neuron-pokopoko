@@ -3,4 +3,4 @@
 /**
  * 出題するカード。
  */
-export type ReviewCard = { stable_key: string, note_id: string, title: string, question: string, answer: string, level: string, rubric: string | null, };
+export type ReviewCard = { stable_key: string, note_id: string, title: string, question: string, answer: string, level: string, rubric: string | null, ref_titles: string[], };

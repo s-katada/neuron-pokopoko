@@ -46,3 +46,7 @@ e2e-policy:
 # 一時 D1 で中級の自由記述を通す。ci には入れない
 e2e-intermediate:
     bash scripts/e2e-intermediate.sh
+
+# 一時 D1 で上級と統合の解禁を通す。ci には入れない
+e2e-integration:
+    bash scripts/e2e-integration.sh
