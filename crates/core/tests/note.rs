@@ -26,6 +26,7 @@ fn gain_note_has_id_and_item_counts() {
     let note = parse_note(GAIN, markdown).unwrap();
 
     assert_eq!(note.id, "gain");
+    assert_eq!(note.title, "ゲイン");
     assert_eq!(note.aliases, vec!["ゲイン".to_owned()]);
     assert_eq!(count(&note, Level::Beginner), 1);
     assert_eq!(count(&note, Level::Intermediate), 2);
@@ -44,6 +45,13 @@ fn missing_id_is_an_error() {
     let markdown = "---\nsources:\n  - https://example.com/camera-gain\n---\n# ゲイン\n";
     let err = parse_note(GAIN, markdown).unwrap_err();
     assert_eq!(err, NoteError::MissingId);
+}
+
+#[test]
+fn title_falls_back_to_id_without_h1() {
+    let markdown = "---\nid: gain\n---\n## 初級\n- 項目\n";
+    let note = parse_note(GAIN, markdown).unwrap();
+    assert_eq!(note.title, "gain");
 }
 
 #[test]
