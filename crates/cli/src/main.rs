@@ -18,11 +18,14 @@ enum Command {
     /// vault のノートを検査する
     Lint { dir: PathBuf },
     /// vault を Worker に同期する
+    ///
+    /// 送り先は --endpoint、無ければ POKO_ENDPOINT、それも無ければ http://localhost:8787。
+    /// POKO_ACCESS_CLIENT_ID と POKO_ACCESS_CLIENT_SECRET が両方あるとき、全リクエストに Cloudflare Access のサービストークンを付ける。片方だけはエラー。
     Sync {
         vault: PathBuf,
-        /// Worker のベース URL
-        #[arg(long, default_value = "http://localhost:8787")]
-        endpoint: String,
+        /// Worker のベース URL。未指定なら POKO_ENDPOINT、それも無ければ http://localhost:8787
+        #[arg(long)]
+        endpoint: Option<String>,
     },
 }
 
@@ -30,7 +33,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Lint { dir } => lint_command(&dir),
-        Command::Sync { vault, endpoint } => sync_command(&vault, &endpoint),
+        Command::Sync { vault, endpoint } => sync_command(&vault, endpoint.as_deref()),
     }
 }
 
@@ -51,7 +54,7 @@ fn lint_command(dir: &Path) -> ExitCode {
     }
 }
 
-fn sync_command(vault: &Path, endpoint: &str) -> ExitCode {
+fn sync_command(vault: &Path, endpoint: Option<&str>) -> ExitCode {
     match lint_vault(vault) {
         Ok(report) if report.findings.is_empty() => {}
         Ok(report) => {
@@ -64,6 +67,11 @@ fn sync_command(vault: &Path, endpoint: &str) -> ExitCode {
         }
     }
 
+    let endpoint = resolve_endpoint(endpoint);
+    let access = match access_from_env() {
+        Ok(access) => access,
+        Err(code) => return code,
+    };
     let local = match collect(vault) {
         Ok(notes) => notes,
         Err(err) => {
@@ -73,11 +81,16 @@ fn sync_command(vault: &Path, endpoint: &str) -> ExitCode {
     };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        // 0 だとリダイレクトを追わず、3xx をそのまま返す。
+        .max_redirects(0)
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .into();
-    let remote = match get_json::<Vec<ManifestEntry>>(&agent, &url(endpoint, "/api/sync/manifest"))
-    {
+    let remote = match get_json::<Vec<ManifestEntry>>(
+        &agent,
+        &url(&endpoint, "/api/sync/manifest"),
+        access.as_ref(),
+    ) {
         Ok(remote) => remote,
         Err(code) => return code,
     };
@@ -91,13 +104,23 @@ fn sync_command(vault: &Path, endpoint: &str) -> ExitCode {
     };
     for notes in &chunks {
         let body = NotesBody { notes };
-        if let Err(code) = post_json(&agent, &url(endpoint, "/api/sync/notes"), &body) {
+        if let Err(code) = post_json(
+            &agent,
+            &url(&endpoint, "/api/sync/notes"),
+            &body,
+            access.as_ref(),
+        ) {
             return code;
         }
     }
     for ids in chunk_deletes(&sync_plan.deletes) {
         let body = DeleteBody { ids: &ids };
-        if let Err(code) = post_json(&agent, &url(endpoint, "/api/sync/delete"), &body) {
+        if let Err(code) = post_json(
+            &agent,
+            &url(&endpoint, "/api/sync/delete"),
+            &body,
+            access.as_ref(),
+        ) {
             return code;
         }
     }
@@ -117,6 +140,19 @@ fn print_findings(report: &Report) {
     }
 }
 
+fn resolve_endpoint(flag: Option<&str>) -> String {
+    if let Some(flag) = flag.filter(|value| !value.is_empty()) {
+        return flag.to_owned();
+    }
+    if let Some(env) = std::env::var("POKO_ENDPOINT")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return env;
+    }
+    "http://localhost:8787".to_owned()
+}
+
 fn url(endpoint: &str, path: &str) -> String {
     format!("{}{path}", endpoint.trim_end_matches('/'))
 }
@@ -131,16 +167,63 @@ struct DeleteBody<'a> {
     ids: &'a [String],
 }
 
-fn get_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str) -> Result<T, ExitCode> {
-    let mut response = http(agent.get(url).call())?;
+struct Access {
+    id: String,
+    secret: String,
+}
+
+fn access_from_env() -> Result<Option<Access>, ExitCode> {
+    let id = std::env::var("POKO_ACCESS_CLIENT_ID")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let secret = std::env::var("POKO_ACCESS_CLIENT_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty());
+    match (id, secret) {
+        (Some(id), Some(secret)) => Ok(Some(Access { id, secret })),
+        (None, None) => Ok(None),
+        (None, Some(_)) => {
+            eprintln!("POKO_ACCESS_CLIENT_ID が無い");
+            Err(ExitCode::from(1))
+        }
+        (Some(_), None) => {
+            eprintln!("POKO_ACCESS_CLIENT_SECRET が無い");
+            Err(ExitCode::from(1))
+        }
+    }
+}
+
+fn with_access<B>(
+    request: ureq::RequestBuilder<B>,
+    access: Option<&Access>,
+) -> ureq::RequestBuilder<B> {
+    match access {
+        Some(access) => request
+            .header("CF-Access-Client-Id", access.id.as_str())
+            .header("CF-Access-Client-Secret", access.secret.as_str()),
+        None => request,
+    }
+}
+
+fn get_json<T: serde::de::DeserializeOwned>(
+    agent: &ureq::Agent,
+    url: &str,
+    access: Option<&Access>,
+) -> Result<T, ExitCode> {
+    let mut response = http(with_access(agent.get(url), access).call())?;
     response.body_mut().read_json().map_err(|err| {
         eprintln!("{err}");
         ExitCode::from(1)
     })
 }
 
-fn post_json(agent: &ureq::Agent, url: &str, body: &impl Serialize) -> Result<(), ExitCode> {
-    http(agent.post(url).send_json(body))?;
+fn post_json(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &impl Serialize,
+    access: Option<&Access>,
+) -> Result<(), ExitCode> {
+    http(with_access(agent.post(url), access).send_json(body))?;
     Ok(())
 }
 
@@ -152,6 +235,11 @@ fn http(
             let status = response.status();
             if status.is_success() {
                 Ok(response)
+            } else if status.is_redirection() || status.as_u16() == 401 || status.as_u16() == 403 {
+                eprintln!(
+                    "Access に拒否されました(POKO_ACCESS_CLIENT_ID / POKO_ACCESS_CLIENT_SECRET とサービス認証ポリシーを確認)"
+                );
+                Err(ExitCode::from(1))
             } else {
                 let body = response
                     .body_mut()
