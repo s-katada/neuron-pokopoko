@@ -127,7 +127,7 @@ fn answer(conn: &Connection, key: &str, rating: Rating) {
 }
 
 #[test]
-fn good_answer_schedules_review_and_draws_the_next_new_card() {
+fn good_answer_schedules_review_and_hides_same_note_cards() {
     let conn = db();
     let state = load_state(&conn, "b1");
     assert_eq!(state.fsrs_state, "new");
@@ -145,7 +145,7 @@ fn good_answer_schedules_review_and_draws_the_next_new_card() {
         .unwrap();
     assert_eq!(fsrs_state, "review");
     assert_eq!(due_at, planned.due_at);
-    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "b2");
+    assert!(draw(&conn, NOW).is_none());
 }
 
 #[test]
@@ -392,6 +392,47 @@ fn push_note(conn: &Connection, id: &str, keys: &[(&str, &str)]) {
         cards: keys.iter().map(|(key, level)| card(key, level)).collect(),
     };
     apply(conn, &upsert_statements(&[&note], NOW));
+}
+
+#[test]
+fn answering_hides_the_sibling_new_card_until_the_next_study_day() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_note(&conn, "sib", &[("a", "beginner"), ("b", "beginner")]);
+    push_note(&conn, "other", &[("o", "beginner")]);
+    answer(&conn, "a", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "o");
+
+    answer(&conn, "a", Rating::Again);
+    conn.execute("UPDATE cards SET due_at = ?1 WHERE stable_key = 'a'", [NOW])
+        .unwrap();
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "a");
+
+    conn.execute(
+        "UPDATE cards SET due_at = ?1 WHERE stable_key = 'a'",
+        [NOW + 86_400 * 10],
+    )
+    .unwrap();
+    let morning = study_day_start(NOW) + 86_400;
+    assert_eq!(draw(&conn, morning).unwrap().stable_key, "b");
+}
+
+#[test]
+fn answering_a_due_card_hides_a_due_sibling() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_note(&conn, "sib", &[("a", "beginner"), ("c", "intermediate")]);
+    push_note(&conn, "other", &[("o", "beginner")]);
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1 WHERE stable_key IN ('a', 'c', 'o')",
+        [NOW],
+    )
+    .unwrap();
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "a");
+    answer(&conn, "a", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "o");
 }
 
 #[test]

@@ -8,9 +8,10 @@ use crate::schedule::{Card, Memory, Rating, ScheduleError, schedule};
 use crate::sync::{Statement, Value};
 
 const NEXT_CARD: &str = "\
-WITH intake AS (
+WITH day AS (SELECT ? AS start),
+intake AS (
   SELECT count(*) AS cnt FROM (
-    SELECT card_key FROM reviews GROUP BY card_key HAVING min(reviewed_at) >= ?
+    SELECT card_key FROM reviews GROUP BY card_key HAVING min(reviewed_at) >= (SELECT start FROM day)
   )
 ),
 gate AS (
@@ -27,6 +28,11 @@ gate AS (
     ) AS adv_ok
   FROM notes nt WHERE nt.deleted_at IS NULL
 ),
+touched AS (
+  SELECT DISTINCT c.note_id, r.card_key
+  FROM reviews r JOIN cards c ON c.stable_key = r.card_key
+  WHERE r.reviewed_at >= (SELECT start FROM day)
+),
 due AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
          0 AS pri, c.due_at AS ord1, c.stable_key AS ord2
@@ -34,6 +40,9 @@ due AS (
   WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL
     AND c.level IN ('beginner', 'intermediate', 'advanced')
     AND c.fsrs_state = 'review' AND c.due_at <= ?
+    AND NOT EXISTS (
+      SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
+    )
 ),
 fresh AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
@@ -46,6 +55,9 @@ fresh AS (
       c.level = 'beginner'
       OR (c.level = 'intermediate' AND g.mid_ok)
       OR (c.level = 'advanced' AND g.mid_ok AND g.adv_ok)
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
     )
 )
 SELECT stable_key, note_id, title, question, answer, level
