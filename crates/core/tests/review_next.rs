@@ -5,11 +5,10 @@ use poko_core::{
 };
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
+mod common;
+
 /// 2026-10-05 04:00:00 JST
 const NOW: i64 = 1_791_140_400;
-
-const SPIKE: &str = include_str!("../../worker/migrations/0001_spike.sql");
-const INIT: &str = include_str!("../../worker/migrations/0002_init.sql");
 
 struct Drawn {
     stable_key: String,
@@ -20,9 +19,7 @@ struct Drawn {
 
 fn db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-    conn.execute_batch(SPIKE).unwrap();
-    conn.execute_batch(INIT).unwrap();
+    common::apply_migrations(&conn);
     let mut cards: Vec<_> = (1..=7)
         .map(|n| card(&format!("b{n}"), "beginner"))
         .collect();
@@ -122,7 +119,7 @@ fn load_state(conn: &Connection, key: &str) -> CardState {
 
 fn answer(conn: &Connection, key: &str, rating: Rating) {
     let state = load_state(conn, key);
-    let planned = answer_statements(key, &state, rating, NOW).unwrap();
+    let planned = answer_statements(key, &state, rating, NOW, None).unwrap();
     apply(conn, &planned.statements);
 }
 
@@ -131,7 +128,7 @@ fn good_answer_schedules_review_and_hides_same_note_cards() {
     let conn = db();
     let state = load_state(&conn, "b1");
     assert_eq!(state.fsrs_state, "new");
-    let planned = answer_statements("b1", &state, Rating::Good, NOW).unwrap();
+    let planned = answer_statements("b1", &state, Rating::Good, NOW, None).unwrap();
     let expected_due = NOW + (f64::from(planned.interval_days) * 86_400.0).round() as i64;
     assert_eq!(planned.due_at, expected_due);
     assert!(planned.due_at > NOW);
@@ -172,6 +169,33 @@ fn answer_appends_one_review_and_increments_reps() {
         )
         .unwrap();
     assert_eq!(reps, 1);
+}
+
+#[test]
+fn answer_stores_response_and_leaves_fsrs_columns_updated() {
+    let conn = db();
+    let state = load_state(&conn, "b1");
+    let planned = answer_statements("b1", &state, Rating::Good, NOW, Some("覚えている")).unwrap();
+    apply(&conn, &planned.statements);
+    let (response, fsrs_state, reps, due_at): (Option<String>, String, i64, i64) = conn
+        .query_row(
+            "SELECT reviews.response, cards.fsrs_state, cards.reps, cards.due_at FROM reviews JOIN cards ON cards.stable_key = reviews.card_key",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(response.as_deref(), Some("覚えている"));
+    assert_eq!(fsrs_state, "review");
+    assert_eq!(reps, 1);
+    assert_eq!(due_at, planned.due_at);
+    assert!(due_at > NOW);
+
+    let conn = db();
+    answer(&conn, "b1", Rating::Good);
+    let response: Option<String> = conn
+        .query_row("SELECT response FROM reviews", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(response, None);
 }
 
 #[test]

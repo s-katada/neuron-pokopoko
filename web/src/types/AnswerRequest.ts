@@ -3,4 +3,4 @@
 /**
  * `POST /api/review/answer` のリクエスト。
  */
-export type AnswerRequest = { stable_key: string, rating: "again" | "hard" | "good" | "easy", };
+export type AnswerRequest = { stable_key: string, rating: "again" | "hard" | "good" | "easy", response?: string, };
