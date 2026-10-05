@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
 use crate::day::{NEW_CARDS_PER_DAY, study_day_start};
 use crate::schedule::{Card, Memory, Rating, ScheduleError, schedule};
 use crate::sync::{Statement, Value};
@@ -47,7 +50,7 @@ const INSERT_REVIEW: &str = "INSERT INTO reviews (card_key, rating, reviewed_at,
 const UPDATE_CARD: &str = "UPDATE cards SET fsrs_state = 'review', stability = ?, difficulty = ?, due_at = ?, last_reviewed_at = ?, reps = reps + 1, lapses = lapses + ?, updated_at = ? WHERE stable_key = ? AND retired_at IS NULL";
 
 /// 回答前の FSRS 列。行が無ければ Worker は 404 にする。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct CardState {
     pub fsrs_state: String,
     pub stability: Option<f64>,
@@ -60,6 +63,43 @@ pub struct CardState {
 pub struct Answer {
     pub statements: Vec<Statement>,
     pub interval_days: f32,
+    pub due_at: i64,
+}
+
+/// 出題するカード。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../web/src/types/ReviewCard.ts")]
+pub struct ReviewCard {
+    pub stable_key: String,
+    pub note_id: String,
+    pub title: String,
+    pub question: String,
+    pub answer: String,
+    pub level: String,
+}
+
+/// `GET /api/review/next`。`card` が null なら今日の出題は終わり。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../web/src/types/NextResponse.ts")]
+pub struct NextResponse {
+    pub card: Option<ReviewCard>,
+}
+
+/// `POST /api/review/answer` のリクエスト。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../web/src/types/AnswerRequest.ts")]
+pub struct AnswerRequest {
+    pub stable_key: String,
+    #[ts(type = "\"again\" | \"hard\" | \"good\" | \"easy\"")]
+    pub rating: String,
+}
+
+/// `POST /api/review/answer` のレスポンス。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../web/src/types/AnswerResponse.ts")]
+pub struct AnswerResponse {
+    pub interval_days: f32,
+    #[ts(type = "number")]
     pub due_at: i64,
 }
 
