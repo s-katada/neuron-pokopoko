@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::day::study_day_start;
+
 const SECS_PER_DAY: f64 = 86_400.0;
 
 const EXPORT_TO: &str = "../../../web/src/types/";
@@ -86,6 +88,36 @@ pub struct NoteStats {
     pub card_count: u32,
 }
 
+/// ノート 1 件のカード一覧。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = format!("{EXPORT_TO}NoteDetail.ts"))]
+pub struct NoteDetail {
+    pub note_id: String,
+    pub title: String,
+    pub cards: Vec<DetailCard>,
+}
+
+/// ノート詳細のカード。未学習の定着率は null。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = format!("{EXPORT_TO}DetailCard.ts"))]
+pub struct DetailCard {
+    pub level: String,
+    pub question: String,
+    pub fsrs_state: String,
+    #[ts(type = "number | null")]
+    pub due_at: Option<i64>,
+    pub retention: Option<f64>,
+}
+
+/// 学習日 1 日のレビュー件数。`day_start` は JST 04:00。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = format!("{EXPORT_TO}DailyCount.ts"))]
+pub struct DailyCount {
+    #[ts(type = "number")]
+    pub day_start: i64,
+    pub count: u32,
+}
+
 #[derive(Default)]
 struct Group<'a> {
     cards: Vec<&'a StatCard>,
@@ -103,6 +135,63 @@ pub fn build_tree(cards: &[StatCard], now: i64) -> Tree {
             .map(|(name, group)| major_stats(name, group, now))
             .collect(),
     }
+}
+
+/// ノートが無ければ `None`。カードは `stable_key` 順。
+pub fn note_detail(cards: &[StatCard], note_id: &str, now: i64) -> Option<NoteDetail> {
+    let mut matched: Vec<&StatCard> = cards
+        .iter()
+        .filter(|card| card.note_id == note_id)
+        .collect();
+    if matched.is_empty() {
+        return None;
+    }
+    matched.sort_by(|left, right| left.stable_key.cmp(&right.stable_key));
+    let title = matched
+        .iter()
+        .map(|card| card.title.as_str())
+        .min()
+        .unwrap_or("")
+        .to_owned();
+    Some(NoteDetail {
+        note_id: note_id.to_owned(),
+        title,
+        cards: matched
+            .into_iter()
+            .map(|card| DetailCard {
+                level: card.level.clone(),
+                question: card.question.clone(),
+                fsrs_state: card.fsrs_state.clone(),
+                due_at: card.due_at,
+                retention: card_retention(card, now),
+            })
+            .collect(),
+    })
+}
+
+/// 今日を含む直近 `days` 日を古い順に返す。0 件の日も含む。
+pub fn daily_counts(reviewed_at: &[i64], now: i64, days: usize) -> Vec<DailyCount> {
+    if days == 0 {
+        return Vec::new();
+    }
+    let today = study_day_start(now);
+    let start = today - i64::try_from(days - 1).expect("日数は i64 に収まる") * 86_400;
+    let mut counts = vec![0u32; days];
+    for &reviewed in reviewed_at {
+        let day = study_day_start(reviewed);
+        if (start..=today).contains(&day) {
+            let index = usize::try_from((day - start) / 86_400).expect("日の添字は usize に収まる");
+            counts[index] = counts[index].saturating_add(1);
+        }
+    }
+    counts
+        .into_iter()
+        .enumerate()
+        .map(|(index, count)| DailyCount {
+            day_start: start + i64::try_from(index).expect("日の添字は i64 に収まる") * 86_400,
+            count,
+        })
+        .collect()
 }
 
 fn group_cards(cards: &[StatCard]) -> Group<'_> {

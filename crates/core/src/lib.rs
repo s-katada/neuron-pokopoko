@@ -21,7 +21,8 @@ pub use review::{
 };
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 pub use stats::{
-    MajorStats, MiddleStats, MinorStats, NoteStats, StatCard, Tree, build_tree, retention,
+    DailyCount, DetailCard, MajorStats, MiddleStats, MinorStats, NoteDetail, NoteStats, StatCard,
+    Tree, build_tree, daily_counts, note_detail, retention,
 };
 pub use sync::{
     MAX_BIND_PARAMS, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry,

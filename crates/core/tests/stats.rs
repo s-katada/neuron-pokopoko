@@ -1,4 +1,4 @@
-use poko_core::{StatCard, build_tree, retention};
+use poko_core::{StatCard, build_tree, daily_counts, note_detail, retention, study_day_start};
 
 const NOW: i64 = 1_791_140_400;
 
@@ -75,6 +75,50 @@ fn tree_retention_is_the_mean_of_cards_not_of_children() {
     assert_eq!(unlearned.card_count, 2);
     assert!(unlearned.middles[0].minors[0].notes[0].retention.is_none());
     assert_eq!(unlearned.middles[0].minors[0].notes[0].card_count, 2);
+}
+
+#[test]
+fn note_detail_skips_retention_until_the_card_is_reviewed() {
+    let cards = vec![
+        reviewed("a1", "beta", "rev-beta", 0, "露光とは？"),
+        fresh("a1", "beta", "new-beta", "未学習の質問"),
+    ];
+    let detail = note_detail(&cards, "a1", NOW).expect("ノートがある");
+    assert_eq!(detail.title, "beta");
+    let new_card = detail
+        .cards
+        .iter()
+        .find(|card| card.fsrs_state == "new")
+        .expect("未学習");
+    let review = detail
+        .cards
+        .iter()
+        .find(|card| card.fsrs_state == "review")
+        .expect("復習");
+    assert!(new_card.retention.is_none());
+    assert!(new_card.due_at.is_none());
+    assert_eq!(new_card.question, "未学習の質問");
+    assert!((review.retention.expect("定着率") - 1.0).abs() < 1e-4);
+    assert_eq!(review.due_at, Some(NOW + 86_400));
+    assert_eq!(review.level, "beginner");
+    assert_eq!(review.question, "露光とは？");
+    assert!(note_detail(&cards, "missing", NOW).is_none());
+}
+
+#[test]
+fn daily_counts_split_at_four_jst_and_keep_empty_days() {
+    let at_0359 = 1_791_140_399;
+    let at_0400 = 1_791_140_400;
+    let counts = daily_counts(&[at_0359, at_0400, at_0400 + 1], at_0400, 3);
+    assert_eq!(counts.len(), 3);
+    assert_eq!(counts[0].count, 0);
+    assert_eq!(counts[0].day_start, study_day_start(at_0400) - 2 * 86_400);
+    assert_eq!(counts[1].day_start, study_day_start(at_0359));
+    assert_eq!(counts[1].count, 1);
+    assert_eq!(counts[2].day_start, study_day_start(at_0400));
+    assert_eq!(counts[2].count, 2);
+    assert_ne!(counts[1].day_start, counts[2].day_start);
+    assert_eq!(daily_counts(&[], at_0400, 30).len(), 30);
 }
 
 fn reviewed(note_id: &str, title: &str, key: &str, elapsed_days: i64, question: &str) -> StatCard {
