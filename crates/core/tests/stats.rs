@@ -1,4 +1,4 @@
-use poko_core::retention;
+use poko_core::{StatCard, build_tree, retention};
 
 const NOW: i64 = 1_791_140_400;
 
@@ -30,4 +30,81 @@ fn retention_matches_an_independent_fsrs6_calculation() {
     let got = retention(10.0, reviewed_at, NOW);
     let expected = 0.809_388_103_573_170_8;
     assert!((got - expected).abs() < 1e-4, "{got}");
+}
+
+#[test]
+fn tree_retention_is_the_mean_of_cards_not_of_children() {
+    let mut cards = vec![
+        reviewed("a1", "beta", "rev-beta", 0, "露光とは？"),
+        fresh("a1", "beta", "new-beta", "未学習の質問"),
+        reviewed("z9", "alpha", "rev-a", 10, "一つ目"),
+        reviewed("z9", "alpha", "rev-b", 10, "二つ目"),
+        reviewed("z9", "alpha", "rev-c", 10, "三つ目"),
+    ];
+    let mut untouched = fresh("n-new", "gamma", "new-1", "触らない");
+    untouched.major = "b".into();
+    let mut untouched_again = fresh("n-new", "gamma", "new-2", "まだ触らない");
+    untouched_again.major = "b".into();
+    cards.insert(0, untouched);
+    cards.push(untouched_again);
+
+    let tree = build_tree(&cards, NOW);
+    let learned = &tree.majors[0];
+    let minor = &learned.middles[0].minors[0];
+    let parent = minor.retention.expect("対象カードがある");
+    let child_mean =
+        (minor.notes[0].retention.expect("alpha") + minor.notes[1].retention.expect("beta")) / 2.0;
+
+    assert_eq!(learned.major, "a");
+    assert_eq!(tree.majors[1].major, "b");
+    assert_eq!(minor.notes[0].title, "alpha");
+    assert_eq!(minor.notes[0].note_id, "z9");
+    assert_eq!(minor.notes[1].title, "beta");
+    assert_eq!(minor.notes[1].note_id, "a1");
+    assert_eq!(minor.notes[1].card_count, 2);
+    assert!((minor.notes[1].retention.expect("beta") - 1.0).abs() < 1e-4);
+    assert!((parent - 0.925).abs() < 1e-4, "{parent}");
+    assert!((child_mean - 0.95).abs() < 1e-4, "{child_mean}");
+    assert!((parent - child_mean).abs() > 1e-3);
+    assert!((learned.middles[0].retention.expect("middle") - parent).abs() < 1e-4);
+    assert!((learned.retention.expect("major") - parent).abs() < 1e-4);
+    assert!((tree.overall.expect("overall") - parent).abs() < 1e-4);
+
+    let unlearned = &tree.majors[1];
+    assert!(unlearned.retention.is_none());
+    assert_eq!(unlearned.card_count, 2);
+    assert!(unlearned.middles[0].minors[0].notes[0].retention.is_none());
+    assert_eq!(unlearned.middles[0].minors[0].notes[0].card_count, 2);
+}
+
+fn reviewed(note_id: &str, title: &str, key: &str, elapsed_days: i64, question: &str) -> StatCard {
+    card(note_id, title, key, "review", Some(elapsed_days), question)
+}
+
+fn fresh(note_id: &str, title: &str, key: &str, question: &str) -> StatCard {
+    card(note_id, title, key, "new", None, question)
+}
+
+fn card(
+    note_id: &str,
+    title: &str,
+    key: &str,
+    fsrs_state: &str,
+    elapsed_days: Option<i64>,
+    question: &str,
+) -> StatCard {
+    StatCard {
+        major: "a".into(),
+        middle: "m".into(),
+        minor: "s".into(),
+        note_id: note_id.into(),
+        title: title.into(),
+        level: "beginner".into(),
+        fsrs_state: fsrs_state.into(),
+        stability: elapsed_days.map(|_| 10.0),
+        last_reviewed_at: elapsed_days.map(|days| NOW - days * 86_400),
+        due_at: elapsed_days.map(|_| NOW + 86_400),
+        stable_key: key.into(),
+        question: question.into(),
+    }
 }

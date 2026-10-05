@@ -20,7 +20,9 @@ pub use review::{
     normalize_response, review_card_from_row,
 };
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
-pub use stats::retention;
+pub use stats::{
+    MajorStats, MiddleStats, MinorStats, NoteStats, StatCard, Tree, build_tree, retention,
+};
 pub use sync::{
     MAX_BIND_PARAMS, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry,
     Statement, SyncCard, SyncError, SyncNote, SyncPlan, Value, chunk, chunk_deletes, collect,
