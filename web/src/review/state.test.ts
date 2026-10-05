@@ -10,6 +10,7 @@ const card: ReviewCard = {
   answer: "撮像素子の出力を増幅する倍率。",
   level: "beginner",
   rubric: null,
+  ref_titles: [],
 };
 
 const mid: ReviewCard = {
@@ -20,6 +21,7 @@ const mid: ReviewCard = {
   answer: "受光量は増えず、信号とノイズをまとめて増幅するから。",
   level: "intermediate",
   rubric: "「受光量は増えない」「S/N 比は改善しない」に触れている",
+  ref_titles: [],
 };
 
 const front: ReviewState = { status: "front", card, answered: 0, draft: "" };

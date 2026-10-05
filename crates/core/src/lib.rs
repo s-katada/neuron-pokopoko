@@ -15,8 +15,8 @@ pub use lint::{Finding, IntegrationRefReason, LintError, LintKind, Report, lint_
 pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use review::{
     Answer, AnswerRequest, AnswerResponse, CardState, MAX_RESPONSE_CHARS, NextResponse,
-    ResponseError, ReviewCard, answer_statements, card_state_query, next_card_query,
-    normalize_response,
+    ResponseError, ReviewCard, ReviewCardRow, answer_statements, card_state_query, next_card_query,
+    normalize_response, review_card_from_row,
 };
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 pub use sync::{

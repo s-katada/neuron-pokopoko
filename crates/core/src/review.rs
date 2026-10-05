@@ -44,11 +44,14 @@ last_cat AS (
 ),
 due AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level, c.rubric,
+         (SELECT json_group_array(title) FROM (
+            SELECT rn.title FROM json_each(c.refs) j JOIN notes rn ON rn.id = j.value ORDER BY j.key
+         )) AS ref_titles,
          0 AS pri, c.due_at AS ord1, c.stable_key AS ord2,
          nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id
   WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL
-    AND c.level IN ('beginner', 'intermediate', 'advanced')
+    AND c.level IN ('beginner', 'intermediate', 'advanced', 'integration')
     AND c.fsrs_state = 'review' AND c.due_at <= ?
     AND NOT EXISTS (
       SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
@@ -56,6 +59,9 @@ due AS (
 ),
 fresh AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level, c.rubric,
+         (SELECT json_group_array(title) FROM (
+            SELECT rn.title FROM json_each(c.refs) j JOIN notes rn ON rn.id = j.value ORDER BY j.key
+         )) AS ref_titles,
          1 AS pri, c.created_at AS ord1, c.stable_key AS ord2,
          nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id JOIN gate g ON g.note_id = c.note_id
@@ -66,12 +72,19 @@ fresh AS (
       c.level = 'beginner'
       OR (c.level = 'intermediate' AND g.mid_ok)
       OR (c.level = 'advanced' AND g.mid_ok AND g.adv_ok)
+      OR (c.level = 'integration' AND g.mid_ok AND g.adv_ok
+          AND json_array_length(c.refs) BETWEEN 1 AND 2
+          AND NOT EXISTS (
+            SELECT 1 FROM json_each(c.refs) j
+            LEFT JOIN gate gr ON gr.note_id = j.value
+            WHERE gr.note_id IS NULL OR NOT (gr.mid_ok AND gr.adv_ok)
+          ))
     )
     AND NOT EXISTS (
       SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
     )
 )
-SELECT stable_key, note_id, title, question, answer, level, rubric
+SELECT stable_key, note_id, title, question, answer, level, rubric, ref_titles
 FROM (SELECT * FROM due UNION ALL SELECT * FROM fresh)
 ORDER BY (cat = coalesce((SELECT cat FROM last_cat), '')), pri, ord1, ord2
 LIMIT 1";
@@ -148,6 +161,35 @@ pub struct ReviewCard {
     pub answer: String,
     pub level: String,
     pub rubric: Option<String>,
+    #[ts(type = "string[]")]
+    pub ref_titles: Vec<String>,
+}
+
+/// `next_card_query` の 1 行。`ref_titles` は JSON 配列の文字列。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ReviewCardRow {
+    pub stable_key: String,
+    pub note_id: String,
+    pub title: String,
+    pub question: String,
+    pub answer: String,
+    pub level: String,
+    pub rubric: Option<String>,
+    pub ref_titles: String,
+}
+
+/// SQL の行を出題カードにする。`ref_titles` の JSON が配列でなければエラー。
+pub fn review_card_from_row(row: ReviewCardRow) -> Result<ReviewCard, serde_json::Error> {
+    Ok(ReviewCard {
+        stable_key: row.stable_key,
+        note_id: row.note_id,
+        title: row.title,
+        question: row.question,
+        answer: row.answer,
+        level: row.level,
+        rubric: row.rubric,
+        ref_titles: serde_json::from_str(&row.ref_titles)?,
+    })
 }
 
 /// `GET /api/review/next`。`card` が null なら今日の出題は終わり。
