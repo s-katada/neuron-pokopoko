@@ -13,10 +13,38 @@ Cloudflare Worker (Rust + D1) ◄──► SPA (React)
 - **FE**: React 19 + Vite+ + Tailwind CSS v4
 - **認証**: Cloudflare Access(アプリ側に認証コードなし)。すべて無料プランで動かす
 
-## 開発環境
+## 開発
+
+前提は nix + direnv。`direnv allow` で rust / node / pnpm / wrangler / just が揃う。
+
+初回だけ、フロントの依存を入れる。
 
 ```bash
-direnv allow   # nix flake が rust / node / pnpm / wrangler を固定
+cd web && pnpm install
+```
+
+ローカル開発はターミナルを 2 つ開く。
+
+```bash
+# ① API :8787
+cd crates/worker && wrangler dev
+
+# ② SPA :5173。/api は 8787 へ proxy
+cd web && pnpm dev
+```
+
+検証は次の 2 つ。`just ci` は fmt-check、clippy、wasm clippy、test、wasm build。
+
+```bash
+just ci
+cd web && pnpm check
+```
+
+```
+crates/core
+crates/cli
+crates/worker
+web/
 ```
 
 進め方は [issues](../../issues) を参照(実装: cursor-agent / レビュー: Claude / マージ: 人間)。
