@@ -50,3 +50,7 @@ e2e-intermediate:
 # 一時 D1 で上級と統合の解禁を通す。ci には入れない
 e2e-integration:
     bash scripts/e2e-integration.sh
+
+# 一時 D1 で統計 API を通す。ci には入れない
+e2e-stats:
+    bash scripts/e2e-stats.sh
