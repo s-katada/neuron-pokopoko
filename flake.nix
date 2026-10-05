@@ -32,6 +32,7 @@
             rustToolchain
             pkgs.rust-analyzer
             pkgs.just
+            pkgs.jq
             pkgs.nodejs_latest
             pkgs.pnpm
             pkgs.wrangler

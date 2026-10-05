@@ -90,6 +90,7 @@ impl Note {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub id: String,
+    pub title: String,
     pub aliases: Vec<String>,
     pub sources: Vec<String>,
     pub major: String,
@@ -141,9 +142,11 @@ pub fn parse_note(relative_path: &str, markdown: &str) -> Result<Note, NoteError
             id,
         });
     }
-    let sections = sections(body)?;
+    let (sections, heading) = sections(body)?;
+    let title = heading.unwrap_or_else(|| id.clone());
     Ok(Note {
         id,
+        title,
         aliases: frontmatter.aliases,
         sources: frontmatter.sources,
         major,
@@ -206,8 +209,9 @@ fn split_frontmatter(markdown: &str) -> Result<(&str, &str), NoteError> {
     Ok((&rest[..end], &rest[end + "\n---\n".len()..]))
 }
 
-fn sections(body: &str) -> Result<Vec<Section>, NoteError> {
+fn sections(body: &str) -> Result<(Vec<Section>, Option<String>), NoteError> {
     let mut sections = Vec::new();
+    let mut title = None;
     let mut current: Option<Level> = None;
     let mut heading: Option<HeadingLevel> = None;
     let mut heading_text = String::new();
@@ -223,7 +227,13 @@ fn sections(body: &str) -> Result<Vec<Section>, NoteError> {
                 heading_text.clear();
             }
             Event::End(TagEnd::Heading(level)) => {
-                finish_heading(level, &heading_text, &mut sections, &mut current)?;
+                finish_heading(
+                    level,
+                    &heading_text,
+                    &mut sections,
+                    &mut current,
+                    &mut title,
+                )?;
                 heading = None;
             }
             Event::Text(text) | Event::Code(text) if heading.is_some() => {
@@ -281,7 +291,7 @@ fn sections(body: &str) -> Result<Vec<Section>, NoteError> {
     {
         return Err(NoteError::MissingBeginner);
     }
-    Ok(sections)
+    Ok((sections, title))
 }
 
 fn finish_heading(
@@ -289,8 +299,15 @@ fn finish_heading(
     text: &str,
     sections: &mut Vec<Section>,
     current: &mut Option<Level>,
+    title: &mut Option<String>,
 ) -> Result<(), NoteError> {
     if level == HeadingLevel::H1 {
+        if title.is_none() {
+            let text = text.trim();
+            if !text.is_empty() {
+                *title = Some(text.to_owned());
+            }
+        }
         return Ok(());
     }
     if level != HeadingLevel::H2 {

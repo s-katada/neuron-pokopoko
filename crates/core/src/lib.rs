@@ -1,7 +1,9 @@
 mod lint;
 pub mod note;
 mod schedule;
+mod sync;
 mod taxonomy;
+mod vault;
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -9,6 +11,11 @@ use ts_rs::TS;
 pub use lint::{Finding, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
+pub use sync::{
+    MAX_BIND_PARAMS, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry,
+    Statement, SyncCard, SyncError, SyncNote, SyncPlan, Value, chunk, chunk_deletes, collect,
+    delete_statements, plan, statements_for, upsert_statements,
+};
 pub use taxonomy::{TaxonRank, Taxonomy, TaxonomyError, load, validate};
 
 /// `/api/demo-schedule` のレスポンス。`cargo test` が `web/src/types/` に出す生成物はコミットする。
