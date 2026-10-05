@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../api";
 import { barHeights, formatDay, formatPercent } from "./format";
 import type { DailyCount } from "../types/DailyCount";
 
@@ -72,8 +73,8 @@ async function loadStats(
   signal: AbortSignal,
 ): Promise<{ overall: number | null; days: DailyCount[] }> {
   const [treeResponse, dailyResponse] = await Promise.all([
-    fetch("/api/tree", { signal }),
-    fetch("/api/stats/daily", { signal }),
+    apiFetch("/api/tree", { signal }),
+    apiFetch("/api/stats/daily", { signal }),
   ]);
   if (!treeResponse.ok || !dailyResponse.ok) {
     throw new Error("request failed");

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../api";
 import { Link, useParams } from "react-router";
 import { levelBadgeClass, levelLabel } from "../review/level";
 import { formatJst, formatPercent } from "../stats/format";
@@ -100,8 +101,8 @@ async function loadNote(
   signal: AbortSignal,
 ): Promise<{ kind: "missing" } | { kind: "ok"; detail: NoteDetail; place: string | null }> {
   const [noteResponse, treeResponse] = await Promise.all([
-    fetch(`/api/notes/${id}`, { signal }),
-    fetch("/api/tree", { signal }),
+    apiFetch(`/api/notes/${id}`, { signal }),
+    apiFetch("/api/tree", { signal }),
   ]);
   if (noteResponse.status === 404) {
     return { kind: "missing" };

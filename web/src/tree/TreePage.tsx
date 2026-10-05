@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../api";
 import { Link } from "react-router";
 import { formatPercent } from "../stats/format";
 import type { MajorStats } from "../types/MajorStats";
@@ -13,7 +14,7 @@ export default function TreePage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch("/api/tree", { signal: controller.signal })
+    void apiFetch("/api/tree", { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(String(response.status));
