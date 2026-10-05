@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { formatJst, formatPercent } from "./format";
+import { barHeights, formatDay, formatJst, formatPercent } from "./format";
 
 describe("formatPercent", () => {
   test("rounds to an integer percent", () => {
@@ -10,6 +10,26 @@ describe("formatPercent", () => {
 
   test("renders a dash when retention is missing", () => {
     expect(formatPercent(null)).toBe("—");
+  });
+});
+
+describe("barHeights", () => {
+  test("scales to the largest count", () => {
+    expect(barHeights([0, 5, 10])).toEqual([0, 50, 100]);
+  });
+
+  test("stays at zero when every day is empty", () => {
+    expect(barHeights([0, 0, 0])).toEqual([0, 0, 0]);
+  });
+
+  test("returns an empty list for no days", () => {
+    expect(barHeights([])).toEqual([]);
+  });
+});
+
+describe("formatDay", () => {
+  test("formats a study-day start as month/day in Asia/Tokyo", () => {
+    expect(formatDay(1_791_140_400)).toBe("10/5");
   });
 });
 
