@@ -38,3 +38,7 @@ e2e-sync:
 # 一時 D1 で fixture vault の出題を通す。ci には入れない
 e2e-review:
     bash scripts/e2e-review.sh
+
+# 一時 D1 で出題ポリシーを通す。ci には入れない
+e2e-policy:
+    bash scripts/e2e-policy.sh
