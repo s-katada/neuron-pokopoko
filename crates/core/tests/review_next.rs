@@ -1,6 +1,7 @@
 use poko_core::{
-    CardState, NEW_CARDS_PER_DAY, Rating, SyncCard, SyncNote, Value, answer_statements,
-    card_state_query, next_card_query, study_day_start, upsert_statements,
+    CardState, NEW_CARDS_PER_DAY, Rating, SyncCard, SyncNote, UNLOCK_ADVANCED_DAYS,
+    UNLOCK_INTERMEDIATE_DAYS, Value, answer_statements, card_state_query, next_card_query,
+    study_day_start, upsert_statements,
 };
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
@@ -85,6 +86,14 @@ fn draw(conn: &Connection, now: i64) -> Option<Drawn> {
     })
     .optional()
     .unwrap()
+}
+
+fn park(conn: &Connection, level: &str, stability: f64) {
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = ?1, due_at = ?2 WHERE level = ?3 AND retired_at IS NULL",
+        (stability, NOW + 86_400, level),
+    )
+    .unwrap();
 }
 
 fn introduce(conn: &Connection, key: &str, at: i64) {
@@ -196,6 +205,8 @@ fn no_reviews_draws_the_first_new_beginner() {
         statement.params,
         vec![
             Value::Integer(study_day_start(NOW)),
+            Value::Real(UNLOCK_INTERMEDIATE_DAYS),
+            Value::Real(UNLOCK_ADVANCED_DAYS),
             Value::Integer(NOW),
             Value::Integer(i64::try_from(NEW_CARDS_PER_DAY).unwrap()),
         ]
@@ -249,7 +260,7 @@ fn due_review_comes_before_a_new_card() {
 }
 
 #[test]
-fn retired_and_intermediate_cards_are_never_drawn() {
+fn retired_beginner_is_skipped_and_due_intermediate_is_drawn() {
     let conn = db();
     conn.execute(
         "UPDATE cards SET retired_at = ?1, fsrs_state = 'review', due_at = ?1 WHERE stable_key = 'b1'",
@@ -261,11 +272,138 @@ fn retired_and_intermediate_cards_are_never_drawn() {
         [NOW],
     )
     .unwrap();
-    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "b2");
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "mid");
     conn.execute(
         "UPDATE cards SET retired_at = ?1 WHERE level = 'beginner'",
         [NOW],
     )
     .unwrap();
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "mid");
+}
+
+#[test]
+fn intermediate_new_waits_for_beginner_stability() {
+    let conn = db();
+    park(&conn, "beginner", 6.99);
     assert!(draw(&conn, NOW).is_none());
+    park(&conn, "beginner", 7.0);
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "mid");
+    assert_eq!(drawn.level, "intermediate");
+}
+
+#[test]
+fn advanced_new_waits_for_intermediate_stability() {
+    let conn = db();
+    park(&conn, "beginner", 7.0);
+    park(&conn, "intermediate", 20.99);
+    conn.execute(
+        "INSERT INTO cards (stable_key, note_id, level, question, answer, refs, created_at, updated_at) VALUES ('adv', 'gain', 'advanced', 'q-adv', 'a-adv', '[]', ?1, ?1)",
+        [NOW],
+    )
+    .unwrap();
+    assert!(draw(&conn, NOW).is_none());
+    park(&conn, "intermediate", 21.0);
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "adv");
+    assert_eq!(drawn.level, "advanced");
+}
+
+#[test]
+fn note_without_beginners_draws_intermediate_new() {
+    let conn = db();
+    conn.execute(
+        "UPDATE cards SET retired_at = ?1 WHERE level = 'beginner'",
+        [NOW],
+    )
+    .unwrap();
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "mid");
+    assert_eq!(drawn.level, "intermediate");
+}
+
+#[test]
+fn new_card_quota_counts_across_levels() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_note(
+        &conn,
+        "beg",
+        &[
+            ("b-a", "beginner"),
+            ("b-b", "beginner"),
+            ("b-c", "beginner"),
+            ("b-left", "beginner"),
+        ],
+    );
+    push_note(
+        &conn,
+        "midn",
+        &[
+            ("m-a", "intermediate"),
+            ("m-b", "intermediate"),
+            ("m-left", "intermediate"),
+        ],
+    );
+    push_note(
+        &conn,
+        "advn",
+        &[("m-done", "intermediate"), ("a-left", "advanced")],
+    );
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', stability = 21.0, due_at = ?1 WHERE stable_key = 'm-done'",
+        [NOW + 86_400],
+    )
+    .unwrap();
+    for key in ["b-a", "b-b", "b-c", "m-a"] {
+        introduce(&conn, key, NOW);
+    }
+    assert!(draw(&conn, NOW).is_some());
+    introduce(&conn, "m-b", NOW);
+    assert!(draw(&conn, NOW).is_none());
+    let mut levels: Vec<String> = conn
+        .prepare("SELECT DISTINCT level FROM cards WHERE retired_at IS NULL AND fsrs_state = 'new' ORDER BY level")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|level| level.unwrap())
+        .collect();
+    levels.sort();
+    assert_eq!(
+        levels,
+        vec![
+            "advanced".to_owned(),
+            "beginner".to_owned(),
+            "intermediate".to_owned()
+        ]
+    );
+}
+
+fn push_note(conn: &Connection, id: &str, keys: &[(&str, &str)]) {
+    let note = SyncNote {
+        id: id.into(),
+        path: format!("learning/image-processing/camera/exposure/{id}.md"),
+        title: id.into(),
+        major: "image-processing".into(),
+        middle: "camera".into(),
+        minor: "exposure".into(),
+        content_hash: "hash".into(),
+        cards: keys.iter().map(|(key, level)| card(key, level)).collect(),
+    };
+    apply(conn, &upsert_statements(&[&note], NOW));
+}
+
+#[test]
+fn due_intermediate_review_ignores_a_locked_beginner() {
+    let conn = db();
+    park(&conn, "beginner", 6.99);
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1, stability = 1.0 WHERE stable_key = 'mid'",
+        [NOW],
+    )
+    .unwrap();
+    let drawn = draw(&conn, NOW).unwrap();
+    assert_eq!(drawn.stable_key, "mid");
+    assert_eq!(drawn.level, "intermediate");
 }

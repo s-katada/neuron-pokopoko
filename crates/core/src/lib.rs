@@ -7,7 +7,10 @@ mod sync;
 mod taxonomy;
 mod vault;
 
-pub use day::{DAY_ROLLOVER_HOUR, JST_OFFSET_SECS, NEW_CARDS_PER_DAY, study_day_start};
+pub use day::{
+    DAY_ROLLOVER_HOUR, JST_OFFSET_SECS, NEW_CARDS_PER_DAY, UNLOCK_ADVANCED_DAYS,
+    UNLOCK_INTERMEDIATE_DAYS, study_day_start,
+};
 pub use lint::{Finding, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use review::{
