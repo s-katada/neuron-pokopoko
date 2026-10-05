@@ -180,6 +180,126 @@ pub fn plan<'a>(local: &'a [SyncNote], remote: &[ManifestEntry]) -> SyncPlan<'a>
     }
 }
 
+/// D1 に渡す値。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+}
+
+/// 実行する SQL 1 文。`IN` 句の `?` 数が変わるため sql は所有する。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Statement {
+    pub sql: String,
+    pub params: Vec<Value>,
+}
+
+const UPSERT_NOTE: &str = "INSERT INTO notes (id, path, title, major, middle, minor, content_hash, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) ON CONFLICT(id) DO UPDATE SET path = excluded.path, title = excluded.title, major = excluded.major, middle = excluded.middle, minor = excluded.minor, content_hash = excluded.content_hash, deleted_at = NULL, updated_at = excluded.updated_at";
+
+const UPSERT_CARD: &str = "INSERT INTO cards (stable_key, note_id, level, question, answer, rubric, refs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(stable_key) DO UPDATE SET note_id = excluded.note_id, level = excluded.level, question = excluded.question, answer = excluded.answer, rubric = excluded.rubric, refs = excluded.refs, retired_at = NULL, updated_at = excluded.updated_at";
+
+const RETIRE_ALL: &str =
+    "UPDATE cards SET retired_at = ?, updated_at = ? WHERE note_id = ? AND retired_at IS NULL";
+
+/// ノート upsert、カード upsert、消えたカードの retire の順。
+pub fn upsert_statements(notes: &[&SyncNote], now_unix: i64) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for note in notes {
+        out.push(Statement {
+            sql: UPSERT_NOTE.to_owned(),
+            params: vec![
+                text(&note.id),
+                text(&note.path),
+                text(&note.title),
+                text(&note.major),
+                text(&note.middle),
+                text(&note.minor),
+                text(&note.content_hash),
+                Value::Integer(now_unix),
+                Value::Integer(now_unix),
+            ],
+        });
+        for card in &note.cards {
+            out.push(Statement {
+                sql: UPSERT_CARD.to_owned(),
+                params: vec![
+                    text(&card.stable_key),
+                    text(&note.id),
+                    text(&card.level),
+                    text(&card.question),
+                    text(&card.answer),
+                    match &card.rubric {
+                        Some(rubric) => text(rubric),
+                        None => Value::Null,
+                    },
+                    text(&serde_json::to_string(&card.refs).expect("refs は JSON になる")),
+                    Value::Integer(now_unix),
+                    Value::Integer(now_unix),
+                ],
+            });
+        }
+        let mut params = vec![
+            Value::Integer(now_unix),
+            Value::Integer(now_unix),
+            text(&note.id),
+        ];
+        params.extend(note.cards.iter().map(|card| text(&card.stable_key)));
+        out.push(Statement {
+            sql: retire_sql(note.cards.len()),
+            params,
+        });
+    }
+    out
+}
+
+/// ノートの論理削除と、配下カードの retire。
+pub fn delete_statements(ids: &[String], now_unix: i64) -> Vec<Statement> {
+    let list = placeholders(ids.len());
+    let id_params: Vec<Value> = ids.iter().map(|id| text(id)).collect();
+    vec![
+        Statement {
+            sql: format!(
+                "UPDATE notes SET deleted_at = ?, updated_at = ? WHERE id IN ({list}) AND deleted_at IS NULL"
+            ),
+            params: stamp(now_unix, &id_params),
+        },
+        Statement {
+            sql: format!(
+                "UPDATE cards SET retired_at = ?, updated_at = ? WHERE note_id IN ({list}) AND retired_at IS NULL"
+            ),
+            params: stamp(now_unix, &id_params),
+        },
+    ]
+}
+
+fn retire_sql(cards: usize) -> String {
+    if cards == 0 {
+        return RETIRE_ALL.to_owned();
+    }
+    format!(
+        "UPDATE cards SET retired_at = ?, updated_at = ? WHERE note_id = ? AND retired_at IS NULL AND stable_key NOT IN ({})",
+        placeholders(cards)
+    )
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn stamp(now_unix: i64, ids: &[Value]) -> Vec<Value> {
+    let mut params = vec![Value::Integer(now_unix), Value::Integer(now_unix)];
+    params.extend(ids.iter().cloned());
+    params
+}
+
+fn text(value: &str) -> Value {
+    Value::Text(value.to_owned())
+}
+
 fn content_hash(note: &SyncNote) -> String {
     #[derive(Serialize)]
     struct Body<'a> {

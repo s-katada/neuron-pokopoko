@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use poko_core::{
-    ManifestEntry, SyncCard, SyncError, SyncNote, chunk, chunk_deletes, collect, parse_note, plan,
-    statements_for,
+    MAX_BIND_PARAMS, ManifestEntry, SyncCard, SyncError, SyncNote, chunk, chunk_deletes, collect,
+    delete_statements, parse_note, plan, statements_for, upsert_statements,
 };
 
 const GAIN_PATH: &str = "learning/image-processing/camera/exposure/gain.md";
@@ -104,6 +104,35 @@ fn collect_reads_the_gain_fixture() {
     assert_eq!(notes[0].title, "ゲイン");
     assert_eq!(notes[0].cards.len(), 4);
     assert_eq!(notes[0].path, GAIN_PATH);
+}
+
+#[test]
+fn generated_statements_match_statements_for_and_bind_limit() {
+    let note = sized("gain", 2);
+    let batch = upsert_statements(&[&note], 10);
+    assert_eq!(batch.len(), statements_for(&note));
+    assert!(
+        batch
+            .iter()
+            .all(|statement| statement.params.len() <= MAX_BIND_PARAMS)
+    );
+    assert!(batch[0].sql.contains("INSERT INTO notes"));
+    assert!(batch[1].sql.contains("INSERT INTO cards"));
+    assert!(batch[3].sql.contains("NOT IN (?, ?)"));
+    let empty = sized("empty", 0);
+    let batch = upsert_statements(&[&empty], 10);
+    assert_eq!(batch.len(), statements_for(&empty));
+    assert!(!batch[1].sql.contains("NOT IN"));
+    let ids = vec!["gain".into(), "empty".into()];
+    let deleted = delete_statements(&ids, 10);
+    assert_eq!(deleted.len(), 2);
+    assert!(
+        deleted
+            .iter()
+            .all(|statement| statement.params.len() <= MAX_BIND_PARAMS)
+    );
+    assert!(deleted[0].sql.contains("id IN (?, ?)"));
+    assert!(deleted[1].sql.contains("note_id IN (?, ?)"));
 }
 
 fn sized(id: &str, cards: usize) -> SyncNote {

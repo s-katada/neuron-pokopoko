@@ -13,7 +13,8 @@ pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 pub use sync::{
     MAX_BIND_PARAMS, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry,
-    SyncCard, SyncError, SyncNote, SyncPlan, chunk, chunk_deletes, collect, plan, statements_for,
+    Statement, SyncCard, SyncError, SyncNote, SyncPlan, Value, chunk, chunk_deletes, collect,
+    delete_statements, plan, statements_for, upsert_statements,
 };
 pub use taxonomy::{TaxonRank, Taxonomy, TaxonomyError, load, validate};
 
