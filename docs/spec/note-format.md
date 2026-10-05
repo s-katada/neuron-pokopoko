@@ -2,34 +2,40 @@
 
 学びメモ(清書ノート)の形式。パーサ・lint・同期はこの仕様だけを正とする。
 
+方針: **パス(分類・ファイル名)は英語、内容(タイトル・本文)は日本語**。ファイル名由来の文字コード問題(macOS の NFD 等)をパスから排除し、日本語は中身に寄せる。
+
 ## 置き場所とファイル名
 
-- ノートは vault(Obsidian リポジトリ)の `learning/<大分類>/<中分類>/<小分類>/<概念>.md` に置く。深さは必ず 3 階層
-- ファイル名(= 概念名)は **vault 全体で一意**。同名概念は「カーネル(画像処理)」のように曖昧さ回避を付ける
-- パスとファイル名は **NFC 正規化**した状態で保存する(macOS の NFD 混入は lint が検出する)
+- ノートは vault(Obsidian リポジトリ)の `learning/<major>/<middle>/<minor>/<id>.md` に置く。深さは必ず 3 階層
+- パスの各セグメントとファイル名は **小文字英数とハイフンのみ**(`^[a-z0-9][a-z0-9-]*$`)
+- **ファイル名は frontmatter の id と同一**(`<id>.md`)。したがってファイル名の一意性は id の一意性と同じ
+- 同名になりそうな概念は id 側で曖昧さ回避する(例: 画像処理のカーネル → `kernel-cv`、OS のカーネル → `kernel-os`)
 
 ## taxonomy(分類の定義)
 
-- `learning/taxonomy.yaml` が分類の正。ノートのパスは、ここに定義された 大/中/小 の組み合わせでなければならない
+- `learning/taxonomy.yaml` が分類の正。ノートのパスは、ここに定義された major/middle/minor の組み合わせでなければならない
+- 分類キーは英語(パスと同じ規則)。日本語の表示名はコメントで併記してよい
 - 新しい分類は、先に taxonomy.yaml へ追加してからノートを置く
 
 ```yaml
 # learning/taxonomy.yaml の形式
-画像処理:
-  カメラ:
-    - 露出
-  QR:
-    - 構造
-Linux:
-  デスクトップ:
-    - 表示サーバ
+image-processing:   # 画像処理
+  camera:           # カメラ
+    - exposure      # 露出
+  qr:               # QR コード
+    - structure     # 構造
+linux:
+  desktop:
+    - display-server
 ```
 
 ## frontmatter
 
 ```yaml
 ---
-id: gain            # 必須。小文字ケバブケース。vault 内で一意
+id: gain            # 必須。小文字英数とハイフン。vault 内で一意。ファイル名と同一
+aliases:            # 任意。Obsidian の検索・リンク用の日本語名
+  - ゲイン
 sources:            # 任意。根拠 URL
   - https://example.com/...
 ---
@@ -40,7 +46,7 @@ sources:            # 任意。根拠 URL
 ## 本文の構造
 
 ```markdown
-# <概念名>
+# <概念名(日本語でよい)>
 
 ## 初級      ← 必須
 ## 中級      ← 任意
@@ -55,7 +61,7 @@ sources:            # 任意。根拠 URL
 - 項目本文 = **清書した文(カードの裏 / 模範解答)**
 - 直下のネストに `Q:`(必須)と `採点:`(中級以上は推奨)を置く
 - `Q:` の無い項目はカード化されない(ただの清書文として許可)
-- 統合カードは `参照:` に同一小分類のノートを 2〜3 個挙げる
+- 統合カードは `参照:` に同一小分類のノートを 2〜3 個挙げる(id で書く)
 
 ```markdown
 ## 初級
@@ -79,14 +85,17 @@ qkey = SHA-256(NFC 正規化した Q 本文) の先頭 16 hex
 例   = gain/beginner/3f2a9c01d4e5b687
 ```
 
+- Q 本文は日本語のままでよい。qkey 計算時にのみ NFC 正規化する
 - 同一入力に対して不変。項目の並べ替え・他カードの追加削除に影響されない
 - **トレードオフ(仕様として明記)**: Q の文言を変えると別カード扱いになり、復習は新規から始まる。誤字修正でも同じ。裏(清書文)や採点基準の修正はキーに影響しない
 
-## 例(正本): learning/画像処理/カメラ/露出/ゲイン.md
+## 例(正本): learning/image-processing/camera/exposure/gain.md
 
 ```markdown
 ---
 id: gain
+aliases:
+  - ゲイン
 sources:
   - https://example.com/camera-gain
 ---
@@ -113,9 +122,9 @@ sources:
 ## lint が検出するもの
 
 1. id の重複(vault 全体)
-2. ファイル名の重複(vault 全体)
-3. taxonomy に無い 大/中/小 パス
-4. NFC 正規化されていないパス・ファイル名
+2. ファイル名が id と一致していない
+3. パスのセグメントが規則(`^[a-z0-9][a-z0-9-]*$`)に合わない
+4. taxonomy に無い major/middle/minor パス
 5. frontmatter の欠落・不正(id が無い等)
 6. 3 階層でない配置
 
