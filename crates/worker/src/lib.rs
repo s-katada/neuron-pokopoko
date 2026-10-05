@@ -10,10 +10,10 @@ use axum::{
     routing::{get, post},
 };
 use poko_core::{
-    AnswerRequest, AnswerResponse, Card, CardState, DemoSchedule, MAX_DELETE_IDS_PER_REQUEST,
+    AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
     MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCard, Statement,
     SyncNote, Value, answer_statements, card_state_query, delete_statements, next_card_query,
-    schedule, statements_for, upsert_statements,
+    statements_for, upsert_statements,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,6 @@ fn router(env: Env) -> Result<Router> {
     };
     Ok(Router::new()
         .route("/api/health", get(health))
-        .route("/api/demo-schedule", get(demo_schedule))
         .route("/api/sync/manifest", get(sync_manifest))
         .route("/api/sync/notes", post(sync_notes))
         .route("/api/sync/delete", post(sync_delete))
@@ -48,18 +47,6 @@ struct HealthBody {
 
 async fn health() -> Json<HealthBody> {
     Json(HealthBody { ok: true })
-}
-
-async fn demo_schedule() -> Result<Json<DemoSchedule>, StatusCode> {
-    let now_unix = now_unix();
-    let scheduled = schedule(Card::New, Rating::Good, now_unix)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(DemoSchedule {
-        rating: "good",
-        interval_days: scheduled.interval_days,
-        stability: scheduled.memory.stability,
-        difficulty: scheduled.memory.difficulty,
-    }))
 }
 
 #[derive(Deserialize)]
