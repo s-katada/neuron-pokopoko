@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { levelBadgeClass, levelLabel } from "./review/level";
+import { relatedLabel } from "./review/related";
 import {
   answerRequest,
   initialState,
@@ -192,6 +193,7 @@ export default function App() {
 }
 
 function CardFace({ card, children }: { card: ReviewCard; children: ReactNode }) {
+  const related = card.level === "integration" ? relatedLabel(card) : null;
   return (
     <section className="flex flex-col gap-6">
       <p className="flex items-center gap-2 text-sm text-neutral-500">
@@ -200,7 +202,12 @@ function CardFace({ card, children }: { card: ReviewCard; children: ReactNode })
           {levelLabel(card.level)}
         </span>
       </p>
-      <h1 className="text-xl font-semibold break-words sm:text-2xl">{card.question}</h1>
+      <div className="flex flex-col gap-2">
+        {related !== null && (
+          <p className="text-sm leading-relaxed break-words text-neutral-600">{related}</p>
+        )}
+        <h1 className="text-xl font-semibold break-words sm:text-2xl">{card.question}</h1>
+      </div>
       {children}
     </section>
   );
