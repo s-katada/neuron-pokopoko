@@ -1,4 +1,5 @@
 import { BrowserRouter, NavLink, Route, Routes } from "react-router";
+import NotePage from "./notes/NotePage";
 import ReviewPage from "./review/ReviewPage";
 import TreePage from "./tree/TreePage";
 
@@ -17,6 +18,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<ReviewPage />} />
           <Route path="/tree" element={<TreePage />} />
+          <Route path="/notes/:id" element={<NotePage />} />
         </Routes>
       </div>
     </BrowserRouter>
