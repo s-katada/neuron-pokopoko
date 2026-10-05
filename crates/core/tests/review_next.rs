@@ -1,6 +1,6 @@
 use poko_core::{
-    NEW_CARDS_PER_DAY, SyncCard, SyncNote, Value, next_card_query, study_day_start,
-    upsert_statements,
+    CardState, NEW_CARDS_PER_DAY, Rating, SyncCard, SyncNote, Value, answer_statements,
+    card_state_query, next_card_query, study_day_start, upsert_statements,
 };
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
@@ -93,6 +93,99 @@ fn introduce(conn: &Connection, key: &str, at: i64) {
         (key, at),
     )
     .unwrap();
+}
+
+fn load_state(conn: &Connection, key: &str) -> CardState {
+    let statement = card_state_query(key);
+    let params: Vec<_> = statement.params.iter().map(to_sql).collect();
+    let row = conn
+        .query_row(&statement.sql, params_from_iter(params), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap();
+    CardState {
+        fsrs_state: row.0,
+        stability: row.1,
+        difficulty: row.2,
+        last_reviewed_at: row.3,
+    }
+}
+
+fn answer(conn: &Connection, key: &str, rating: Rating) {
+    let state = load_state(conn, key);
+    let planned = answer_statements(key, &state, rating, NOW).unwrap();
+    apply(conn, &planned.statements);
+}
+
+#[test]
+fn good_answer_schedules_review_and_draws_the_next_new_card() {
+    let conn = db();
+    let state = load_state(&conn, "b1");
+    assert_eq!(state.fsrs_state, "new");
+    let planned = answer_statements("b1", &state, Rating::Good, NOW).unwrap();
+    let expected_due = NOW + (f64::from(planned.interval_days) * 86_400.0).round() as i64;
+    assert_eq!(planned.due_at, expected_due);
+    assert!(planned.due_at > NOW);
+    apply(&conn, &planned.statements);
+    let (fsrs_state, due_at): (String, i64) = conn
+        .query_row(
+            "SELECT fsrs_state, due_at FROM cards WHERE stable_key = 'b1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(fsrs_state, "review");
+    assert_eq!(due_at, planned.due_at);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "b2");
+}
+
+#[test]
+fn answer_appends_one_review_and_increments_reps() {
+    let conn = db();
+    answer(&conn, "b1", Rating::Good);
+    let reviews: i64 = conn
+        .query_row("SELECT count(*) FROM reviews", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(reviews, 1);
+    let row: (String, String, i64) = conn
+        .query_row(
+            "SELECT card_key, rating, reviewed_at FROM reviews",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("b1".into(), "good".into(), NOW));
+    let reps: i64 = conn
+        .query_row(
+            "SELECT reps FROM cards WHERE stable_key = 'b1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reps, 1);
+}
+
+#[test]
+fn again_increments_lapses_only_after_the_card_is_in_review() {
+    let conn = db();
+    answer(&conn, "b1", Rating::Again);
+    let lapses: i64 = conn
+        .query_row(
+            "SELECT lapses FROM cards WHERE stable_key = 'b1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lapses, 0);
+    answer(&conn, "b1", Rating::Again);
+    let lapses: i64 = conn
+        .query_row(
+            "SELECT lapses FROM cards WHERE stable_key = 'b1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(lapses, 1);
 }
 
 #[test]

@@ -12,6 +12,29 @@ pub enum Rating {
     Easy,
 }
 
+impl Rating {
+    /// reviews.rating に入れる値。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Again => "again",
+            Self::Hard => "hard",
+            Self::Good => "good",
+            Self::Easy => "easy",
+        }
+    }
+
+    /// `as_str` の逆。未知の文字列は `None`。
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "again" => Some(Self::Again),
+            "hard" => Some(Self::Hard),
+            "good" => Some(Self::Good),
+            "easy" => Some(Self::Easy),
+            _ => None,
+        }
+    }
+}
+
 /// カードの記憶状態。新規カードはまだ持たない。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Memory {
@@ -103,6 +126,14 @@ mod tests {
         assert!(again < hard);
         assert!(hard < good);
         assert!(good < easy);
+    }
+
+    #[test]
+    fn rating_text_round_trips() {
+        for rating in [Rating::Again, Rating::Hard, Rating::Good, Rating::Easy] {
+            assert_eq!(Rating::parse(rating.as_str()), Some(rating));
+        }
+        assert_eq!(Rating::parse("nope"), None);
     }
 
     #[test]
