@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::StatusCode;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::{
     Router,
@@ -11,9 +11,11 @@ use axum::{
 };
 use poko_core::{
     AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
-    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCardRow, Statement,
-    SyncNote, Value, answer_statements, card_state_query, delete_statements, next_card_query,
-    normalize_response, review_card_from_row, statements_for, upsert_statements,
+    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCardRow, StatCard,
+    Statement, SyncNote, Value, answer_statements, build_tree, card_state_query, daily_counts,
+    daily_reviews_query, delete_statements, next_card_query, normalize_response, note_detail,
+    note_stat_cards_query, review_card_from_row, stat_cards_query, statements_for,
+    upsert_statements,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -37,6 +39,9 @@ fn router(env: Env) -> Result<Router> {
         .route("/api/sync/delete", post(sync_delete))
         .route("/api/review/next", get(review_next))
         .route("/api/review/answer", post(review_answer))
+        .route("/api/tree", get(tree))
+        .route("/api/notes/{id}", get(note_stats))
+        .route("/api/stats/daily", get(daily_stats))
         .with_state(state))
 }
 
@@ -202,6 +207,81 @@ async fn review_answer(
         due_at: answer.due_at,
     })
     .into_response()
+}
+
+#[worker::send]
+async fn tree(State(state): State<AppState>) -> Response {
+    let now = now_unix();
+    match query_all::<StatCard>(&state.db, &stat_cards_query()).await {
+        Ok(rows) => Json(build_tree(&rows, now)).into_response(),
+        Err(err) => server_error(err),
+    }
+}
+
+#[worker::send]
+async fn note_stats(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let now = now_unix();
+    match query_all::<StatCard>(&state.db, &note_stat_cards_query(&id)).await {
+        Ok(rows) => match note_detail(&rows, &id, now) {
+            Some(detail) => Json(detail).into_response(),
+            None => (StatusCode::NOT_FOUND, "ノートがない".to_owned()).into_response(),
+        },
+        Err(err) => server_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReviewedAt {
+    reviewed_at: i64,
+}
+
+#[worker::send]
+async fn daily_stats(State(state): State<AppState>, uri: Uri) -> Response {
+    let days = match parse_days(uri.query()) {
+        Ok(days) => days,
+        Err(message) => return (StatusCode::BAD_REQUEST, message.to_owned()).into_response(),
+    };
+    let now = now_unix();
+    match query_all::<ReviewedAt>(&state.db, &daily_reviews_query(now, days)).await {
+        Ok(rows) => {
+            let reviewed_at: Vec<i64> = rows.into_iter().map(|row| row.reviewed_at).collect();
+            Json(daily_counts(&reviewed_at, now, days)).into_response()
+        }
+        Err(err) => server_error(err),
+    }
+}
+
+fn parse_days(query: Option<&str>) -> Result<usize, &'static str> {
+    let Some(query) = query.filter(|text| !text.is_empty()) else {
+        return Ok(30);
+    };
+    let mut days = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key != "days" {
+            continue;
+        }
+        let parsed: usize = value.parse().map_err(|_| "days が不正")?;
+        if !(1..=90).contains(&parsed) {
+            return Err("days は 1 から 90");
+        }
+        days = Some(parsed);
+    }
+    Ok(days.unwrap_or(30))
+}
+
+async fn query_all<T: DeserializeOwned>(db: &D1Database, statement: &Statement) -> Result<Vec<T>> {
+    let params: Vec<JsValue> = statement.params.iter().map(to_d1).collect();
+    let result = db
+        .prepare(statement.sql.as_str())
+        .bind(&params)?
+        .all()
+        .await?;
+    result
+        .results()
+        .map_err(|err| Error::RustError(err.to_string()))
 }
 
 async fn query_first<T: DeserializeOwned>(

@@ -3,6 +3,7 @@ mod lint;
 pub mod note;
 mod review;
 mod schedule;
+mod stats;
 mod sync;
 mod taxonomy;
 mod vault;
@@ -19,6 +20,11 @@ pub use review::{
     normalize_response, review_card_from_row,
 };
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
+pub use stats::{
+    DailyCount, DetailCard, MajorStats, MiddleStats, MinorStats, NoteDetail, NoteStats, StatCard,
+    Tree, build_tree, daily_counts, daily_reviews_query, note_detail, note_stat_cards_query,
+    retention, stat_cards_query,
+};
 pub use sync::{
     MAX_BIND_PARAMS, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry,
     Statement, SyncCard, SyncError, SyncNote, SyncPlan, Value, chunk, chunk_deletes, collect,

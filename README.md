@@ -45,6 +45,7 @@ cd web && pnpm check
 出題ポリシーの通し確認は `just e2e-policy`（`just ci` には入らない）。
 中級ループの通し確認は `just e2e-intermediate`（`just ci` には入らない）。
 上級と統合の通し確認は `just e2e-integration`（`just ci` には入らない）。
+統計の通し確認は `just e2e-stats`（`just ci` には入らない）。
 
 ```
 crates/core
