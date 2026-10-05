@@ -381,17 +381,37 @@ fn new_card_quota_counts_across_levels() {
 }
 
 fn push_note(conn: &Connection, id: &str, keys: &[(&str, &str)]) {
+    push_cat(
+        conn,
+        id,
+        "image-processing",
+        "camera",
+        "exposure",
+        keys,
+        NOW,
+    );
+}
+
+fn push_cat(
+    conn: &Connection,
+    id: &str,
+    major: &str,
+    middle: &str,
+    minor: &str,
+    keys: &[(&str, &str)],
+    at: i64,
+) {
     let note = SyncNote {
         id: id.into(),
-        path: format!("learning/image-processing/camera/exposure/{id}.md"),
+        path: format!("learning/{major}/{middle}/{minor}/{id}.md"),
         title: id.into(),
-        major: "image-processing".into(),
-        middle: "camera".into(),
-        minor: "exposure".into(),
+        major: major.into(),
+        middle: middle.into(),
+        minor: minor.into(),
         content_hash: "hash".into(),
         cards: keys.iter().map(|(key, level)| card(key, level)).collect(),
     };
-    apply(conn, &upsert_statements(&[&note], NOW));
+    apply(conn, &upsert_statements(&[&note], at));
 }
 
 #[test]
@@ -447,4 +467,144 @@ fn due_intermediate_review_ignores_a_locked_beginner() {
     let drawn = draw(&conn, NOW).unwrap();
     assert_eq!(drawn.stable_key, "mid");
     assert_eq!(drawn.level, "intermediate");
+}
+
+#[test]
+fn answering_in_one_category_draws_the_other_category_next() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "x-old",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xa", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "x-rest",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xb", "beginner")],
+        NOW + 1,
+    );
+    push_cat(
+        &conn,
+        "y",
+        "image-processing",
+        "lens",
+        "focus",
+        &[("yc", "beginner")],
+        NOW + 2,
+    );
+    answer(&conn, "xa", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "yc");
+}
+
+#[test]
+fn same_category_is_drawn_when_no_other_category_remains() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "x-old",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xa", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "x-rest",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xb", "beginner")],
+        NOW + 1,
+    );
+    answer(&conn, "xa", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "xb");
+}
+
+#[test]
+fn shared_minor_name_is_still_a_different_category() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "p-old",
+        "a",
+        "b",
+        "basics",
+        &[("p-old", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "p-rest",
+        "a",
+        "b",
+        "basics",
+        &[("p-next", "beginner")],
+        NOW + 1,
+    );
+    push_cat(
+        &conn,
+        "q",
+        "c",
+        "d",
+        "basics",
+        &[("q", "beginner")],
+        NOW + 2,
+    );
+    answer(&conn, "p-old", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "q");
+}
+
+#[test]
+fn different_category_new_card_precedes_same_category_due_review() {
+    let conn = db();
+    conn.execute("UPDATE cards SET retired_at = ?1", [NOW])
+        .unwrap();
+    push_cat(
+        &conn,
+        "x-reviewed",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xr", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "x-due",
+        "image-processing",
+        "camera",
+        "exposure",
+        &[("xd", "beginner")],
+        NOW,
+    );
+    push_cat(
+        &conn,
+        "y-new",
+        "image-processing",
+        "lens",
+        "focus",
+        &[("yn", "beginner")],
+        NOW + 1,
+    );
+    conn.execute(
+        "UPDATE cards SET fsrs_state = 'review', due_at = ?1 WHERE stable_key = 'xd'",
+        [NOW],
+    )
+    .unwrap();
+    answer(&conn, "xr", Rating::Good);
+    assert_eq!(draw(&conn, NOW).unwrap().stable_key, "yn");
 }

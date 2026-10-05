@@ -33,9 +33,18 @@ touched AS (
   FROM reviews r JOIN cards c ON c.stable_key = r.card_key
   WHERE r.reviewed_at >= (SELECT start FROM day)
 ),
+last_cat AS (
+  SELECT nt.major || '/' || nt.middle || '/' || nt.minor AS cat
+  FROM reviews r
+  JOIN cards c ON c.stable_key = r.card_key
+  JOIN notes nt ON nt.id = c.note_id
+  ORDER BY r.reviewed_at DESC, r.id DESC
+  LIMIT 1
+),
 due AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
-         0 AS pri, c.due_at AS ord1, c.stable_key AS ord2
+         0 AS pri, c.due_at AS ord1, c.stable_key AS ord2,
+         nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id
   WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL
     AND c.level IN ('beginner', 'intermediate', 'advanced')
@@ -46,7 +55,8 @@ due AS (
 ),
 fresh AS (
   SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
-         1 AS pri, c.created_at AS ord1, c.stable_key AS ord2
+         1 AS pri, c.created_at AS ord1, c.stable_key AS ord2,
+         nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id JOIN gate g ON g.note_id = c.note_id
   WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL
     AND c.fsrs_state = 'new'
@@ -62,7 +72,7 @@ fresh AS (
 )
 SELECT stable_key, note_id, title, question, answer, level
 FROM (SELECT * FROM due UNION ALL SELECT * FROM fresh)
-ORDER BY pri, ord1, ord2
+ORDER BY (cat = coalesce((SELECT cat FROM last_cat), '')), pri, ord1, ord2
 LIMIT 1";
 
 /// 次に出すカードを 1 件選ぶ。params は学習日の開始、中級の解禁日数、上級の解禁日数、now、新規枠。
