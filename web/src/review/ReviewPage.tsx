@@ -100,7 +100,7 @@ export default function ReviewPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-xl flex-col gap-6 px-4 py-8">
+    <div className="flex flex-col gap-6">
       {state.status === "loading" && <p className="text-center text-lg">読み込み中</p>}
       {state.status === "front" && isFreeText(state.card) && (
         <CardFace card={state.card}>
@@ -188,7 +188,7 @@ export default function ReviewPage() {
           </button>
         </div>
       )}
-    </main>
+    </div>
   );
 }
 
