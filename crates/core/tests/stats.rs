@@ -1,4 +1,11 @@
-use poko_core::{StatCard, build_tree, daily_counts, note_detail, retention, study_day_start};
+use poko_core::{
+    StatCard, SyncCard, SyncNote, Value, build_tree, daily_counts, daily_reviews_query,
+    note_detail, note_stat_cards_query, retention, stat_cards_query, study_day_start,
+    upsert_statements,
+};
+use rusqlite::{Connection, params_from_iter};
+
+mod common;
 
 const NOW: i64 = 1_791_140_400;
 
@@ -119,6 +126,135 @@ fn daily_counts_split_at_four_jst_and_keep_empty_days() {
     assert_eq!(counts[2].count, 2);
     assert_ne!(counts[1].day_start, counts[2].day_start);
     assert_eq!(daily_counts(&[], at_0400, 30).len(), 30);
+}
+
+#[test]
+fn stat_queries_skip_retired_cards_and_deleted_notes() {
+    let conn = Connection::open_in_memory().unwrap();
+    common::apply_migrations(&conn);
+    apply(
+        &conn,
+        &upsert_statements(
+            &[
+                &note("keep", "残す", "keep", &["beginner", "intermediate"]),
+                &note("gone", "消す", "gone", &["beginner"]),
+            ],
+            NOW,
+        ),
+    );
+    conn.execute(
+        "UPDATE cards SET retired_at = ?1 WHERE stable_key = 'keep/intermediate'",
+        [NOW],
+    )
+    .unwrap();
+    conn.execute("UPDATE notes SET deleted_at = ?1 WHERE id = 'gone'", [NOW])
+        .unwrap();
+    let start = study_day_start(NOW) - 86_400;
+    conn.execute(
+        "INSERT INTO reviews (card_key, rating, reviewed_at, interval_days, stability, difficulty) VALUES ('keep/beginner', 'good', ?1, 1.0, 1.0, 5.0)",
+        [start - 1],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO reviews (card_key, rating, reviewed_at, interval_days, stability, difficulty) VALUES ('keep/beginner', 'good', ?1, 1.0, 1.0, 5.0)",
+        [NOW],
+    )
+    .unwrap();
+
+    let cards = query_cards(&conn, &stat_cards_query());
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].note_id, "keep");
+    assert_eq!(cards[0].title, "残す");
+    assert_eq!(cards[0].major, "image-processing");
+    assert_eq!(cards[0].middle, "camera");
+    assert_eq!(cards[0].minor, "exposure");
+    assert_eq!(cards[0].level, "beginner");
+    assert_eq!(cards[0].fsrs_state, "new");
+    assert_eq!(cards[0].stable_key, "keep/beginner");
+    assert_eq!(cards[0].question, "q-beginner");
+    assert_eq!(cards[0].stability, None);
+    assert_eq!(cards[0].last_reviewed_at, None);
+    assert_eq!(cards[0].due_at, None);
+
+    assert_eq!(query_cards(&conn, &note_stat_cards_query("keep")).len(), 1);
+    assert!(query_cards(&conn, &note_stat_cards_query("gone")).is_empty());
+    assert!(query_cards(&conn, &note_stat_cards_query("missing")).is_empty());
+
+    let statement = daily_reviews_query(NOW, 2);
+    let params: Vec<_> = statement.params.iter().map(to_sql).collect();
+    let mut stmt = conn.prepare(&statement.sql).unwrap();
+    let mut rows = stmt.query(params_from_iter(params)).unwrap();
+    let mut reviewed_at = Vec::new();
+    while let Some(row) = rows.next().unwrap() {
+        reviewed_at.push(row.get::<_, i64>("reviewed_at").unwrap());
+    }
+    assert_eq!(reviewed_at, vec![NOW]);
+}
+
+fn note(id: &str, title: &str, key_prefix: &str, levels: &[&str]) -> SyncNote {
+    SyncNote {
+        id: id.into(),
+        path: format!("learning/image-processing/camera/exposure/{id}.md"),
+        title: title.into(),
+        major: "image-processing".into(),
+        middle: "camera".into(),
+        minor: "exposure".into(),
+        content_hash: "hash".into(),
+        cards: levels
+            .iter()
+            .map(|level| SyncCard {
+                stable_key: format!("{key_prefix}/{level}"),
+                level: (*level).into(),
+                question: format!("q-{level}"),
+                answer: format!("a-{level}"),
+                rubric: None,
+                refs: vec![],
+            })
+            .collect(),
+    }
+}
+
+fn apply(conn: &Connection, statements: &[poko_core::Statement]) {
+    for statement in statements {
+        let params: Vec<_> = statement.params.iter().map(to_sql).collect();
+        conn.prepare(&statement.sql)
+            .unwrap()
+            .execute(params_from_iter(params))
+            .unwrap();
+    }
+}
+
+fn to_sql(value: &Value) -> rusqlite::types::Value {
+    match value {
+        Value::Null => rusqlite::types::Value::Null,
+        Value::Integer(n) => rusqlite::types::Value::Integer(*n),
+        Value::Real(n) => rusqlite::types::Value::Real(*n),
+        Value::Text(text) => rusqlite::types::Value::Text(text.clone()),
+    }
+}
+
+fn query_cards(conn: &Connection, statement: &poko_core::Statement) -> Vec<StatCard> {
+    let params: Vec<_> = statement.params.iter().map(to_sql).collect();
+    let mut stmt = conn.prepare(&statement.sql).unwrap();
+    let mut rows = stmt.query(params_from_iter(params)).unwrap();
+    let mut cards = Vec::new();
+    while let Some(row) = rows.next().unwrap() {
+        cards.push(StatCard {
+            major: row.get("major").unwrap(),
+            middle: row.get("middle").unwrap(),
+            minor: row.get("minor").unwrap(),
+            note_id: row.get("note_id").unwrap(),
+            title: row.get("title").unwrap(),
+            level: row.get("level").unwrap(),
+            fsrs_state: row.get("fsrs_state").unwrap(),
+            stability: row.get("stability").unwrap(),
+            last_reviewed_at: row.get("last_reviewed_at").unwrap(),
+            due_at: row.get("due_at").unwrap(),
+            stable_key: row.get("stable_key").unwrap(),
+            question: row.get("question").unwrap(),
+        });
+    }
+    cards
 }
 
 fn reviewed(note_id: &str, title: &str, key: &str, elapsed_days: i64, question: &str) -> StatCard {

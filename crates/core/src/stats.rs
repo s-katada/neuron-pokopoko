@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::day::study_day_start;
+use crate::sync::{Statement, Value};
 
 const SECS_PER_DAY: f64 = 86_400.0;
 
@@ -169,13 +170,43 @@ pub fn note_detail(cards: &[StatCard], note_id: &str, now: i64) -> Option<NoteDe
     })
 }
 
+const STAT_CARD_COLUMNS: &str = "\
+SELECT nt.major, nt.middle, nt.minor, nt.id AS note_id, nt.title, \
+c.level, c.fsrs_state, c.stability, c.last_reviewed_at, c.due_at, c.stable_key, c.question \
+FROM cards c JOIN notes nt ON nt.id = c.note_id \
+WHERE c.retired_at IS NULL AND nt.deleted_at IS NULL";
+
+/// 有効カードと未削除ノート。列は [`StatCard`] と同じ。
+pub fn stat_cards_query() -> Statement {
+    Statement {
+        sql: STAT_CARD_COLUMNS.to_owned(),
+        params: vec![],
+    }
+}
+
+/// [`stat_cards_query`] を 1 ノートに絞る。
+pub fn note_stat_cards_query(note_id: &str) -> Statement {
+    Statement {
+        sql: format!("{STAT_CARD_COLUMNS} AND nt.id = ?"),
+        params: vec![Value::Text(note_id.to_owned())],
+    }
+}
+
+/// 今日を含む直近 `days` 日に入る `reviewed_at`。`days` は 1 以上。
+pub fn daily_reviews_query(now: i64, days: usize) -> Statement {
+    Statement {
+        sql: "SELECT reviewed_at FROM reviews WHERE reviewed_at >= ?".to_owned(),
+        params: vec![Value::Integer(window_start(now, days))],
+    }
+}
+
 /// 今日を含む直近 `days` 日を古い順に返す。0 件の日も含む。
 pub fn daily_counts(reviewed_at: &[i64], now: i64, days: usize) -> Vec<DailyCount> {
     if days == 0 {
         return Vec::new();
     }
     let today = study_day_start(now);
-    let start = today - i64::try_from(days - 1).expect("日数は i64 に収まる") * 86_400;
+    let start = window_start(now, days);
     let mut counts = vec![0u32; days];
     for &reviewed in reviewed_at {
         let day = study_day_start(reviewed);
@@ -192,6 +223,10 @@ pub fn daily_counts(reviewed_at: &[i64], now: i64, days: usize) -> Vec<DailyCoun
             count,
         })
         .collect()
+}
+
+fn window_start(now: i64, days: usize) -> i64 {
+    study_day_start(now) - i64::try_from(days - 1).expect("日数は i64 に収まる") * 86_400
 }
 
 fn group_cards(cards: &[StatCard]) -> Group<'_> {
