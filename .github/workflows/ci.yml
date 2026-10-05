@@ -15,4 +15,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - run: nix develop . --command just ci
-      - run: nix develop . --command bash -c "cd web && pnpm install --frozen-lockfile && pnpm check"
+      - run: nix develop . --command bash -c "cd web && pnpm install --frozen-lockfile && pnpm check && pnpm test"
