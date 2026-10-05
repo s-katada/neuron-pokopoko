@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use thiserror::Error;
 
@@ -55,9 +55,7 @@ pub enum LintError {
 pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
     let yaml = fs::read_to_string(root.join("learning/taxonomy.yaml"))?;
     let taxonomy = taxonomy::load(&yaml)?;
-    let mut paths = Vec::new();
-    walk(&root.join("learning"), &mut paths)?;
-    paths.sort();
+    let paths = crate::vault::learning_markdown(root)?;
 
     let mut findings = Vec::new();
     let mut notes = 0;
@@ -65,7 +63,7 @@ pub fn lint_vault(root: &Path) -> Result<Report, LintError> {
     let mut ids: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for path in paths {
-        let rel = relative(root, &path);
+        let rel = crate::vault::relative(root, &path);
         match note::parse_location(&rel) {
             Err(NoteError::InvalidSegment(name)) => {
                 push(&mut findings, &rel, LintKind::BadSegment, &name);
@@ -136,27 +134,4 @@ fn push_dups(findings: &mut Vec<Finding>, groups: BTreeMap<String, Vec<String>>,
             push(findings, &path, kind, &detail);
         }
     }
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), LintError> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            walk(&path, out)?;
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
 }

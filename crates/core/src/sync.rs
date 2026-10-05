@@ -1,7 +1,19 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 
-use crate::note::{Card, Note};
+use crate::note::{Card, Note, NoteError};
+
+/// 1 リクエストに載せる SQL 文の上限。D1 Free は 50。
+pub const MAX_STATEMENTS_PER_REQUEST: usize = 40;
+/// 1 文のバインドパラメータ上限。D1 Free は 100。
+pub const MAX_BIND_PARAMS: usize = 100;
+/// `IN (?, ...)` の削除 id 上限。バインド上限より小さく取る。
+pub const MAX_DELETE_IDS_PER_REQUEST: usize = 90;
+
+const _: () = assert!(MAX_DELETE_IDS_PER_REQUEST <= MAX_BIND_PARAMS);
 
 /// 同期するノート。`content_hash` 以外を固定順の JSON にして SHA-256 する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +86,70 @@ impl From<Card> for SyncCard {
             refs: card.refs,
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum SyncError {
+    #[error("ノート {id} は 1 リクエストに入らない")]
+    NoteTooLarge { id: String },
+    #[error("{path}: {source}")]
+    Parse {
+        path: String,
+        #[source]
+        source: NoteError,
+    },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// ノート upsert 1 + カード upsert N + 消えたカードの retire 1。
+pub fn statements_for(note: &SyncNote) -> usize {
+    note.cards.len() + 2
+}
+
+/// 文数の合計が [`MAX_STATEMENTS_PER_REQUEST`] 以下になるよう分ける。
+pub fn chunk<'a>(upserts: &[&'a SyncNote]) -> Result<Vec<Vec<&'a SyncNote>>, SyncError> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut used = 0;
+    for note in upserts {
+        let cost = statements_for(note);
+        if cost > MAX_STATEMENTS_PER_REQUEST {
+            return Err(SyncError::NoteTooLarge {
+                id: note.id.clone(),
+            });
+        }
+        if used > 0 && used + cost > MAX_STATEMENTS_PER_REQUEST {
+            chunks.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        current.push(*note);
+        used += cost;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    Ok(chunks)
+}
+
+/// 削除 id を [`MAX_DELETE_IDS_PER_REQUEST`] 件ずつに分ける。
+pub fn chunk_deletes(ids: &[String]) -> Vec<Vec<String>> {
+    ids.chunks(MAX_DELETE_IDS_PER_REQUEST)
+        .map(<[String]>::to_vec)
+        .collect()
+}
+
+/// `learning/` 配下のノートを同期ペイロードにする。
+pub fn collect(vault_root: &Path) -> Result<Vec<SyncNote>, SyncError> {
+    let mut notes = Vec::new();
+    for path in crate::vault::learning_markdown(vault_root)? {
+        let rel = crate::vault::relative(vault_root, &path);
+        let markdown = std::fs::read_to_string(&path)?;
+        let note = crate::note::parse_note(&rel, &markdown)
+            .map_err(|source| SyncError::Parse { path: rel, source })?;
+        notes.push(SyncNote::from_note(&note));
+    }
+    Ok(notes)
 }
 
 /// ハッシュが違う、またはリモートに無いノートを upsert する。

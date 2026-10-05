@@ -1,4 +1,9 @@
-use poko_core::{ManifestEntry, SyncNote, parse_note, plan};
+use std::path::PathBuf;
+
+use poko_core::{
+    ManifestEntry, SyncCard, SyncError, SyncNote, chunk, chunk_deletes, collect, parse_note, plan,
+    statements_for,
+};
 
 const GAIN_PATH: &str = "learning/image-processing/camera/exposure/gain.md";
 
@@ -51,6 +56,69 @@ fn plan_splits_upsert_delete_and_unchanged() {
     assert_eq!(upserts, ["edited", "added"]);
     assert_eq!(diff.deletes, ["gone"]);
     assert_eq!(diff.unchanged, 1);
+}
+
+#[test]
+fn chunk_splits_when_statements_pass_forty() {
+    let fits: Vec<_> = (0..2).map(|i| sized(&format!("n{i}"), 18)).collect();
+    let refs: Vec<_> = fits.iter().collect();
+    let chunks = chunk(&refs).unwrap();
+    assert_eq!(statements_for(&fits[0]) + statements_for(&fits[1]), 40);
+    assert_eq!(chunks.len(), 1);
+
+    let overflow = [sized("big", 19), sized("rest", 18)];
+    let refs: Vec<_> = overflow.iter().collect();
+    let chunks = chunk(&refs).unwrap();
+    assert_eq!(
+        statements_for(&overflow[0]) + statements_for(&overflow[1]),
+        41
+    );
+    assert_eq!(chunks.len(), 2);
+}
+
+#[test]
+fn chunk_rejects_a_note_with_thirty_nine_cards() {
+    let note = sized("huge", 39);
+    assert_eq!(statements_for(&note), 41);
+    let err = chunk(&[&note]).unwrap_err();
+    match err {
+        SyncError::NoteTooLarge { id } => assert_eq!(id, "huge"),
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn chunk_deletes_splits_ninety_one_ids() {
+    let ids: Vec<_> = (0..91).map(|i| i.to_string()).collect();
+    let chunks = chunk_deletes(&ids);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].len(), 90);
+    assert_eq!(chunks[1].len(), 1);
+}
+
+#[test]
+fn collect_reads_the_gain_fixture() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vault");
+    let notes = collect(&root).unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].title, "ゲイン");
+    assert_eq!(notes[0].cards.len(), 4);
+    assert_eq!(notes[0].path, GAIN_PATH);
+}
+
+fn sized(id: &str, cards: usize) -> SyncNote {
+    let mut note = sample(id, "hash");
+    note.cards = (0..cards)
+        .map(|index| SyncCard {
+            stable_key: format!("{id}/{index}"),
+            level: "beginner".into(),
+            question: format!("q{index}"),
+            answer: format!("a{index}"),
+            rubric: None,
+            refs: Vec::new(),
+        })
+        .collect();
+    note
 }
 
 fn sample(id: &str, hash: &str) -> SyncNote {
