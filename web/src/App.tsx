@@ -1,6 +1,7 @@
 import { BrowserRouter, NavLink, Route, Routes } from "react-router";
 import NotePage from "./notes/NotePage";
 import ReviewPage from "./review/ReviewPage";
+import StatsPage from "./stats/StatsPage";
 import TreePage from "./tree/TreePage";
 
 export default function App() {
@@ -14,11 +15,15 @@ export default function App() {
           <NavLink to="/tree" className={navClass}>
             ツリー
           </NavLink>
+          <NavLink to="/stats" className={navClass}>
+            統計
+          </NavLink>
         </nav>
         <Routes>
           <Route path="/" element={<ReviewPage />} />
           <Route path="/tree" element={<TreePage />} />
           <Route path="/notes/:id" element={<NotePage />} />
+          <Route path="/stats" element={<StatsPage />} />
         </Routes>
       </div>
     </BrowserRouter>
