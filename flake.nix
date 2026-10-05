@@ -37,6 +37,7 @@
             pkgs.pnpm
             pkgs.wrangler
             pkgs.binaryen # wasm-opt
+            pkgs.imagemagick # magick
           ];
 
           shellHook = ''

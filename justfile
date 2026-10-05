@@ -31,6 +31,10 @@ build-wasm:
 # CI と同じ検証
 ci: fmt-check lint lint-wasm test build-wasm
 
+# SVG から PWA アイコンを生成する
+icons:
+    bash scripts/gen-icons.sh
+
 # 一時 D1 で fixture vault の同期を通す。ci には入れない
 e2e-sync:
     bash scripts/e2e-sync.sh
