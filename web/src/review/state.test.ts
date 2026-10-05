@@ -9,6 +9,7 @@ const card: ReviewCard = {
   question: "ゲインとは？",
   answer: "撮像素子の出力を増幅する倍率。",
   level: "beginner",
+  rubric: null,
 };
 
 const front: ReviewState = { status: "front", card, answered: 0 };

@@ -42,7 +42,7 @@ last_cat AS (
   LIMIT 1
 ),
 due AS (
-  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
+  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level, c.rubric,
          0 AS pri, c.due_at AS ord1, c.stable_key AS ord2,
          nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id
@@ -54,7 +54,7 @@ due AS (
     )
 ),
 fresh AS (
-  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
+  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level, c.rubric,
          1 AS pri, c.created_at AS ord1, c.stable_key AS ord2,
          nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id JOIN gate g ON g.note_id = c.note_id
@@ -70,7 +70,7 @@ fresh AS (
       SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
     )
 )
-SELECT stable_key, note_id, title, question, answer, level
+SELECT stable_key, note_id, title, question, answer, level, rubric
 FROM (SELECT * FROM due UNION ALL SELECT * FROM fresh)
 ORDER BY (cat = coalesce((SELECT cat FROM last_cat), '')), pri, ord1, ord2
 LIMIT 1";
@@ -122,6 +122,7 @@ pub struct ReviewCard {
     pub question: String,
     pub answer: String,
     pub level: String,
+    pub rubric: Option<String>,
 }
 
 /// `GET /api/review/next`。`card` が null なら今日の出題は終わり。

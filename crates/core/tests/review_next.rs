@@ -608,3 +608,30 @@ fn different_category_new_card_precedes_same_category_due_review() {
     answer(&conn, "xr", Rating::Good);
     assert_eq!(draw(&conn, NOW).unwrap().stable_key, "yn");
 }
+
+#[test]
+fn next_card_returns_rubric_for_an_unlocked_intermediate_and_none_for_a_beginner() {
+    let conn = db();
+    let (level, rubric) = draw_level_and_rubric(&conn, NOW);
+    assert_eq!(level, "beginner");
+    assert_eq!(rubric, None);
+
+    park(&conn, "beginner", 7.0);
+    conn.execute(
+        "UPDATE cards SET rubric = ?1 WHERE stable_key = 'mid'",
+        ["被写界深度が浅くなる"],
+    )
+    .unwrap();
+    let (level, rubric) = draw_level_and_rubric(&conn, NOW);
+    assert_eq!(level, "intermediate");
+    assert_eq!(rubric.as_deref(), Some("被写界深度が浅くなる"));
+}
+
+fn draw_level_and_rubric(conn: &Connection, now: i64) -> (String, Option<String>) {
+    let statement = next_card_query(now);
+    let params: Vec<_> = statement.params.iter().map(to_sql).collect();
+    conn.query_row(&statement.sql, params_from_iter(params), |row| {
+        Ok((row.get(5)?, row.get(6)?))
+    })
+    .unwrap()
+}
