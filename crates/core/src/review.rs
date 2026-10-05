@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use ts_rs::TS;
 
 use crate::day::{
@@ -42,7 +43,7 @@ last_cat AS (
   LIMIT 1
 ),
 due AS (
-  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
+  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level, c.rubric,
          0 AS pri, c.due_at AS ord1, c.stable_key AS ord2,
          nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id
@@ -54,7 +55,7 @@ due AS (
     )
 ),
 fresh AS (
-  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level,
+  SELECT c.stable_key, c.note_id, nt.title, c.question, c.answer, c.level, c.rubric,
          1 AS pri, c.created_at AS ord1, c.stable_key AS ord2,
          nt.major || '/' || nt.middle || '/' || nt.minor AS cat
   FROM cards c JOIN notes nt ON nt.id = c.note_id JOIN gate g ON g.note_id = c.note_id
@@ -70,7 +71,7 @@ fresh AS (
       SELECT 1 FROM touched t WHERE t.note_id = c.note_id AND t.card_key <> c.stable_key
     )
 )
-SELECT stable_key, note_id, title, question, answer, level
+SELECT stable_key, note_id, title, question, answer, level, rubric
 FROM (SELECT * FROM due UNION ALL SELECT * FROM fresh)
 ORDER BY (cat = coalesce((SELECT cat FROM last_cat), '')), pri, ord1, ord2
 LIMIT 1";
@@ -91,7 +92,7 @@ pub fn next_card_query(now_unix: i64) -> Statement {
 
 const CARD_STATE: &str = "SELECT c.fsrs_state, c.stability, c.difficulty, c.last_reviewed_at FROM cards c JOIN notes nt ON nt.id = c.note_id WHERE c.stable_key = ? AND c.retired_at IS NULL AND nt.deleted_at IS NULL";
 
-const INSERT_REVIEW: &str = "INSERT INTO reviews (card_key, rating, reviewed_at, interval_days, stability, difficulty) VALUES (?, ?, ?, ?, ?, ?)";
+const INSERT_REVIEW: &str = "INSERT INTO reviews (card_key, rating, reviewed_at, interval_days, stability, difficulty, response) VALUES (?, ?, ?, ?, ?, ?, ?)";
 
 const UPDATE_CARD: &str = "UPDATE cards SET fsrs_state = 'review', stability = ?, difficulty = ?, due_at = ?, last_reviewed_at = ?, reps = reps + 1, lapses = lapses + ?, updated_at = ? WHERE stable_key = ? AND retired_at IS NULL";
 
@@ -112,6 +113,30 @@ pub struct Answer {
     pub due_at: i64,
 }
 
+/// 自由記述の上限。Unicode スカラー値の数。
+pub const MAX_RESPONSE_CHARS: usize = 2000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ResponseError {
+    #[error("回答は {MAX_RESPONSE_CHARS} 文字まで")]
+    TooLong,
+}
+
+/// 前後の空白を除き、空なら保存しない。上限を超えたらエラー。
+pub fn normalize_response(raw: Option<&str>) -> Result<Option<String>, ResponseError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_RESPONSE_CHARS {
+        return Err(ResponseError::TooLong);
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
 /// 出題するカード。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../web/src/types/ReviewCard.ts")]
@@ -122,6 +147,7 @@ pub struct ReviewCard {
     pub question: String,
     pub answer: String,
     pub level: String,
+    pub rubric: Option<String>,
 }
 
 /// `GET /api/review/next`。`card` が null なら今日の出題は終わり。
@@ -138,6 +164,9 @@ pub struct AnswerRequest {
     pub stable_key: String,
     #[ts(type = "\"again\" | \"hard\" | \"good\" | \"easy\"")]
     pub rating: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub response: Option<String>,
 }
 
 /// `POST /api/review/answer` のレスポンス。
@@ -163,6 +192,7 @@ pub fn answer_statements(
     state: &CardState,
     rating: Rating,
     now_unix: i64,
+    response: Option<&str>,
 ) -> Result<Answer, ScheduleError> {
     let card = match (state.fsrs_state.as_str(), state.stability) {
         ("new", _) | (_, None) => Card::New,
@@ -190,6 +220,10 @@ pub fn answer_statements(
                     Value::Real(f64::from(scheduled.interval_days)),
                     Value::Real(stability),
                     Value::Real(difficulty),
+                    match response {
+                        Some(response) => text(response),
+                        None => Value::Null,
+                    },
                 ],
             },
             Statement {
@@ -212,4 +246,33 @@ pub fn answer_statements(
 
 fn text(value: &str) -> Value {
     Value::Text(value.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_response_accepts_two_thousand_japanese_chars() {
+        let text = "あ".repeat(MAX_RESPONSE_CHARS);
+        assert_eq!(
+            normalize_response(Some(&text)).unwrap().as_deref(),
+            Some(text.as_str())
+        );
+    }
+
+    #[test]
+    fn normalize_response_rejects_two_thousand_one_chars() {
+        let text = "あ".repeat(MAX_RESPONSE_CHARS + 1);
+        assert_eq!(
+            normalize_response(Some(&text)).unwrap_err(),
+            ResponseError::TooLong
+        );
+    }
+
+    #[test]
+    fn normalize_response_drops_blank_and_none() {
+        assert_eq!(normalize_response(Some("  \n\t  ")).unwrap(), None);
+        assert_eq!(normalize_response(None).unwrap(), None);
+    }
 }

@@ -13,7 +13,7 @@ use poko_core::{
     AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
     MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCard, Statement,
     SyncNote, Value, answer_statements, card_state_query, delete_statements, next_card_query,
-    statements_for, upsert_statements,
+    normalize_response, statements_for, upsert_statements,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -164,13 +164,23 @@ async fn review_answer(
         Some(rating) => rating,
         None => return (StatusCode::BAD_REQUEST, "rating が不正".to_owned()).into_response(),
     };
+    let response = match normalize_response(body.response.as_deref()) {
+        Ok(response) => response,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
     let card_state =
         match query_first::<CardState>(&state.db, &card_state_query(&body.stable_key)).await {
             Ok(Some(card_state)) => card_state,
             Ok(None) => return (StatusCode::NOT_FOUND, "カードがない".to_owned()).into_response(),
             Err(err) => return server_error(err),
         };
-    let answer = match answer_statements(&body.stable_key, &card_state, rating, now_unix()) {
+    let answer = match answer_statements(
+        &body.stable_key,
+        &card_state,
+        rating,
+        now_unix(),
+        response.as_deref(),
+    ) {
         Ok(answer) => answer,
         Err(_) => {
             return (

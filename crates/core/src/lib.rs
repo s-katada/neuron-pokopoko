@@ -14,8 +14,9 @@ pub use day::{
 pub use lint::{Finding, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
 pub use review::{
-    Answer, AnswerRequest, AnswerResponse, CardState, NextResponse, ReviewCard, answer_statements,
-    card_state_query, next_card_query,
+    Answer, AnswerRequest, AnswerResponse, CardState, MAX_RESPONSE_CHARS, NextResponse,
+    ResponseError, ReviewCard, answer_statements, card_state_query, next_card_query,
+    normalize_response,
 };
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 pub use sync::{

@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { levelBadgeClass, levelLabel } from "./review/level";
-import { initialState, reduce, type Rating, type ReviewState } from "./review/state";
+import {
+  answerRequest,
+  initialState,
+  isFreeText,
+  keyAction,
+  reduce,
+  type Rating,
+  type ReviewState,
+} from "./review/state";
 import type { AnswerRequest } from "./types/AnswerRequest";
 import type { NextResponse } from "./types/NextResponse";
 import type { ReviewCard } from "./types/ReviewCard";
@@ -47,20 +55,27 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.repeat) {
-        return;
-      }
-      if (event.key === " ") {
-        event.preventDefault();
-        setState((current) => reduce(current, { type: "flip" }));
-        return;
-      }
-      const rating = RATINGS.find((item) => item.key === event.key)?.rating;
-      if (rating === undefined) {
+      const action = keyAction(
+        {
+          key: event.key,
+          isComposing: event.isComposing,
+          keyCode: event.keyCode,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          repeat: event.repeat,
+          inTextarea: event.target instanceof HTMLTextAreaElement,
+        },
+        stateRef.current,
+      );
+      if (action.type === "none") {
         return;
       }
       event.preventDefault();
-      rate(rating);
+      if (action.type === "flip") {
+        setState((current) => reduce(current, { type: "flip" }));
+        return;
+      }
+      rate(action.rating);
     }
     window.addEventListener("keydown", onKey);
     return () => {
@@ -70,22 +85,46 @@ export default function App() {
 
   function rate(rating: Rating) {
     const current = stateRef.current;
-    if (current.status !== "back") {
+    const next = reduce(current, { type: "rate", rating });
+    if (next === current || next.status !== "submitting") {
       return;
     }
-    const next = reduce(current, { type: "rate", rating });
-    if (next === current) {
+    const payload = answerRequest(next, rating);
+    if (payload === null) {
       return;
     }
     stateRef.current = next;
     setState(next);
-    void sendAnswer(current.card, rating, setState, stateRef);
+    void sendAnswer(payload, setState, stateRef);
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-lg flex-col justify-center gap-6 px-4 py-8">
+    <main className="mx-auto flex min-h-screen w-full max-w-xl flex-col gap-6 px-4 py-8">
       {state.status === "loading" && <p className="text-center text-lg">読み込み中</p>}
-      {state.status === "front" && (
+      {state.status === "front" && isFreeText(state.card) && (
+        <CardFace card={state.card}>
+          <textarea
+            value={state.draft}
+            rows={5}
+            aria-label="自分の答え"
+            className="w-full resize-y rounded-xl border border-neutral-300 p-3 text-base leading-relaxed"
+            onChange={(event) => {
+              const text = event.target.value;
+              setState((current) => reduce(current, { type: "edit", text }));
+            }}
+          />
+          <button
+            type="button"
+            className="min-h-14 w-full rounded-xl bg-neutral-900 text-lg text-white"
+            onClick={() => {
+              setState((current) => reduce(current, { type: "flip" }));
+            }}
+          >
+            答え合わせ
+          </button>
+        </CardFace>
+      )}
+      {state.status === "front" && !isFreeText(state.card) && (
         <CardFace card={state.card}>
           <button
             type="button"
@@ -100,7 +139,13 @@ export default function App() {
       )}
       {state.status === "back" && (
         <CardFace card={state.card}>
-          <p className="whitespace-pre-wrap text-lg">{state.card.answer}</p>
+          {isFreeText(state.card) ? (
+            <FreeTextReveal card={state.card} response={state.response} />
+          ) : (
+            <p className="whitespace-pre-wrap text-lg leading-relaxed break-words">
+              {state.card.answer}
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {RATINGS.map((item) => (
               <button
@@ -155,20 +200,40 @@ function CardFace({ card, children }: { card: ReviewCard; children: ReactNode })
           {levelLabel(card.level)}
         </span>
       </p>
-      <h1 className="text-2xl font-semibold">{card.question}</h1>
+      <h1 className="text-xl font-semibold break-words sm:text-2xl">{card.question}</h1>
       {children}
     </section>
   );
 }
 
+function FreeTextReveal({ card, response }: { card: ReviewCard; response: string | undefined }) {
+  const own = response !== undefined && response.trim() !== "" ? response : "(未記入)";
+  return (
+    <div className="flex flex-col gap-4 text-base leading-relaxed">
+      <div>
+        <h2 className="text-sm font-medium text-neutral-500">自分の答え</h2>
+        <p className="mt-1 whitespace-pre-wrap break-words">{own}</p>
+      </div>
+      <div>
+        <h2 className="text-sm font-medium text-neutral-500">模範解答</h2>
+        <p className="mt-1 whitespace-pre-wrap break-words">{card.answer}</p>
+      </div>
+      {card.rubric !== null && card.rubric !== "" && (
+        <div>
+          <h2 className="text-sm font-medium text-neutral-500">採点基準</h2>
+          <p className="mt-1 whitespace-pre-wrap break-words">{card.rubric}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function sendAnswer(
-  card: ReviewCard,
-  rating: Rating,
+  payload: AnswerRequest,
   setState: (update: (current: ReviewState) => ReviewState) => void,
   stateRef: { current: ReviewState },
 ) {
   try {
-    const payload: AnswerRequest = { stable_key: card.stable_key, rating };
     const response = await fetch("/api/review/answer", {
       method: "POST",
       headers: { "content-type": "application/json" },

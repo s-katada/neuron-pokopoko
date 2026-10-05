@@ -1,14 +1,11 @@
 use poko_core::{SyncCard, SyncNote, Value, delete_statements, upsert_statements};
 use rusqlite::{Connection, params_from_iter};
 
-const SPIKE: &str = include_str!("../../worker/migrations/0001_spike.sql");
-const INIT: &str = include_str!("../../worker/migrations/0002_init.sql");
+mod common;
 
 fn db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-    conn.execute_batch(SPIKE).unwrap();
-    conn.execute_batch(INIT).unwrap();
+    common::apply_migrations(&conn);
     conn
 }
 

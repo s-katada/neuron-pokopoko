@@ -43,6 +43,7 @@ cd web && pnpm check
 同期の通し確認は `just e2e-sync`（`just ci` には入らない）。
 出題の通し確認は `just e2e-review`（`just ci` には入らない）。
 出題ポリシーの通し確認は `just e2e-policy`（`just ci` には入らない）。
+中級ループの通し確認は `just e2e-intermediate`（`just ci` には入らない）。
 
 ```
 crates/core
