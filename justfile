@@ -20,6 +20,10 @@ lint:
 lint-wasm:
     cargo clippy -p poko-worker --target wasm32-unknown-unknown -- -D warnings
 
+# GitHub Actions のワークフローを検査する
+lint-actions:
+    actionlint
+
 # テストを実行する
 test:
     cargo test
@@ -29,7 +33,11 @@ build-wasm:
     cargo build -p poko-worker --target wasm32-unknown-unknown
 
 # CI と同じ検証
-ci: fmt-check lint lint-wasm test build-wasm
+ci: fmt-check lint lint-wasm lint-actions test build-wasm
+
+# SVG から PWA アイコンを生成する
+icons:
+    bash scripts/gen-icons.sh
 
 # 一時 D1 で fixture vault の同期を通す。ci には入れない
 e2e-sync:
@@ -54,3 +62,7 @@ e2e-integration:
 # 一時 D1 で統計 API を通す。ci には入れない
 e2e-stats:
     bash scripts/e2e-stats.sh
+
+# 本番が Access で守られ、トークンで health と manifest に届くか確かめる。ci には入れない
+verify-prod *args:
+    bash scripts/verify-prod.sh {{args}}

@@ -37,6 +37,8 @@
             pkgs.pnpm
             pkgs.wrangler
             pkgs.binaryen # wasm-opt
+            pkgs.imagemagick # magick
+            pkgs.actionlint # GitHub Actions
           ];
 
           shellHook = ''

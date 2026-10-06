@@ -33,6 +33,8 @@ cd crates/worker && wrangler dev
 cd web && pnpm dev
 ```
 
+`wrangler dev` は `web/dist` が要る。初回は `cd web && pnpm build`。ディレクトリが無ければ空で作っても起動する。
+
 検証は次の 2 つ。`just ci` は fmt-check、clippy、wasm clippy、test、wasm build。
 
 ```bash

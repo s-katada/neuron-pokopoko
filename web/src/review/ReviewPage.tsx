@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { apiFetch } from "../api";
 import { levelBadgeClass, levelLabel } from "./level";
 import { relatedLabel } from "./related";
 import {
@@ -31,7 +32,7 @@ export default function ReviewPage() {
       return;
     }
     const controller = new AbortController();
-    void fetch("/api/review/next", { signal: controller.signal })
+    void apiFetch("/api/review/next", { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(String(response.status));
@@ -241,7 +242,7 @@ async function sendAnswer(
   stateRef: { current: ReviewState },
 ) {
   try {
-    const response = await fetch("/api/review/answer", {
+    const response = await apiFetch("/api/review/answer", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),

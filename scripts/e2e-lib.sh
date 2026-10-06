@@ -75,6 +75,9 @@ e2e_prepare() {
 
   mkdir -p "$VAULT"
   cp -R "$ROOT/crates/core/tests/fixtures/vault/." "$VAULT/"
+  if [[ ! -d "$ROOT/web/dist" ]]; then
+    mkdir -p "$ROOT/web/dist"
+  fi
   cargo build -q -p poko
   POKO="$ROOT/target/debug/poko"
 

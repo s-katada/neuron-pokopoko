@@ -16,3 +16,47 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - run: nix develop . --command just ci
       - run: nix develop . --command bash -c "cd web && pnpm install --frozen-lockfile && pnpm check && pnpm test"
+
+  check-deploy:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "${TOKEN:-}" ] || [ -z "${ACCT:-}" ]; then
+            echo "::warning::デプロイをスキップしました: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID のどちらかが未設定です"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          id=$(grep -E '^database_id = "' crates/worker/wrangler.toml | head -n 1 | cut -d'"' -f2)
+          if [ "$id" = "00000000-0000-0000-0000-000000000000" ]; then
+            echo "::warning::デプロイをスキップしました: database_id がプレースホルダです"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: [ci, check-deploy]
+    if: needs.check-deploy.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix develop . --command bash -c "cd web && pnpm install --frozen-lockfile && pnpm build"
+      - run: nix develop . --command bash -c "cd crates/worker && wrangler d1 migrations apply neuron-pokopoko --remote"
+      - run: nix develop . --command bash -c "cd crates/worker && wrangler deploy"
