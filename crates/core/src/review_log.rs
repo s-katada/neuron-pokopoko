@@ -24,6 +24,13 @@ pub struct ReviewLog {
     pub response: Option<String>,
 }
 
+impl ReviewLog {
+    /// JSONL の 1 行。id は含めない。
+    pub fn to_json_line(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+}
+
 /// API の 1 行。次ページの `after` に使う id を含む。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReviewLogPage {
