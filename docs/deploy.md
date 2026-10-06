@@ -68,3 +68,10 @@ just verify-prod
 
 - ノートを清書したら `poko sync <vault>`(`POKO_ENDPOINT` が本番を指していれば本番へ送られる)
 - コードの変更は PR → マージ。CI が通ったときだけ自動でデプロイされ、マイグレーションも適用される
+
+## 復習ログの退避と最適化
+
+- **退避**(週 1 回など): `poko export <ファイル>`。履歴が残る場所に置く。例: `mkdir -p <vault>/.poko` してから `poko export <vault>/.poko/reviews.jsonl` し、vault と一緒にコミットする(poko が読むのは `learning/` の下だけなので、同期には影響しない)
+- **復元**(D1 を作り直したとき): 新しい D1 の ID を `wrangler.toml` に入れてデプロイ → `poko sync <vault>` → `poko import <ファイル>`。「カードが無い」と出た行は vault から消えたノートの分で、戻せない
+- **最適化**(月 1 回など): `poko optimize --dry-run` で結果を見てから `poko optimize`。学習に使える復習が 400 件に満たないうちは何も変えない。保存した値は、その後の回答と統計から使われる
+- 形式と条件の詳細は [docs/spec/review-log.md](spec/review-log.md)

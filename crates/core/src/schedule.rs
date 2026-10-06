@@ -63,7 +63,13 @@ pub struct Scheduled {
 pub struct ScheduleError;
 
 /// `now_unix` は呼び出し側が渡す Unix 秒。この関数は現在時刻を取得しない。
-pub fn schedule(card: Card, rating: Rating, now_unix: i64) -> Result<Scheduled, ScheduleError> {
+/// `parameters` は 21 個。呼び出し側が既定値か保存値を渡す。
+pub fn schedule(
+    card: Card,
+    rating: Rating,
+    now_unix: i64,
+    parameters: &[f32; 21],
+) -> Result<Scheduled, ScheduleError> {
     let (current, days_elapsed) = match card {
         Card::New => (None, 0),
         Card::Reviewed {
@@ -78,7 +84,8 @@ pub fn schedule(card: Card, rating: Rating, now_unix: i64) -> Result<Scheduled, 
         ),
     };
 
-    let states = FSRS::default()
+    let states = FSRS::new(parameters)
+        .map_err(|_| ScheduleError)?
         .next_states(current, DESIRED_RETENTION, days_elapsed)
         .map_err(|_| ScheduleError)?;
     let chosen = match rating {
@@ -97,7 +104,7 @@ pub fn schedule(card: Card, rating: Rating, now_unix: i64) -> Result<Scheduled, 
     })
 }
 
-fn days_between(reviewed_at_unix: i64, now_unix: i64) -> u32 {
+pub(crate) fn days_between(reviewed_at_unix: i64, now_unix: i64) -> u32 {
     let seconds = now_unix.saturating_sub(reviewed_at_unix).max(0);
     u32::try_from(seconds / SECONDS_PER_DAY).unwrap_or(u32::MAX)
 }
@@ -108,11 +115,15 @@ mod tests {
 
     const NOW: i64 = 1_700_000_000;
 
+    fn defaults() -> [f32; 21] {
+        crate::default_parameters()
+    }
+
     fn intervals(card: Card, now_unix: i64) -> (f32, f32, f32, f32) {
-        let again = schedule(card, Rating::Again, now_unix).unwrap();
-        let hard = schedule(card, Rating::Hard, now_unix).unwrap();
-        let good = schedule(card, Rating::Good, now_unix).unwrap();
-        let easy = schedule(card, Rating::Easy, now_unix).unwrap();
+        let again = schedule(card, Rating::Again, now_unix, &defaults()).unwrap();
+        let hard = schedule(card, Rating::Hard, now_unix, &defaults()).unwrap();
+        let good = schedule(card, Rating::Good, now_unix, &defaults()).unwrap();
+        let easy = schedule(card, Rating::Easy, now_unix, &defaults()).unwrap();
         (
             again.interval_days,
             hard.interval_days,
@@ -143,11 +154,20 @@ mod tests {
 
     #[test]
     fn reviewed_card_intervals_increase_with_rating() {
-        let first = schedule(Card::New, Rating::Good, NOW).unwrap();
+        let first = schedule(Card::New, Rating::Good, NOW, &defaults()).unwrap();
         let card = Card::Reviewed {
             memory: first.memory,
             reviewed_at_unix: NOW,
         };
         assert_longer(card, NOW + SECONDS_PER_DAY);
+    }
+
+    #[test]
+    fn custom_w2_changes_the_good_interval_of_a_new_card() {
+        let base = schedule(Card::New, Rating::Good, NOW, &defaults()).unwrap();
+        let mut parameters = defaults();
+        parameters[2] = 10.0;
+        let changed = schedule(Card::New, Rating::Good, NOW, &parameters).unwrap();
+        assert_ne!(base.interval_days, changed.interval_days);
     }
 }

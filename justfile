@@ -47,6 +47,18 @@ e2e-sync:
 e2e-review:
     bash scripts/e2e-review.sh
 
+# 一時 D1 で復習ログの JSONL 書き出しを通す。ci には入れない
+e2e-export:
+    bash scripts/e2e-export.sh
+
+# 一時 D1 で JSONL からの再投入を通す。ci には入れない
+e2e-import:
+    bash scripts/e2e-import.sh
+
+# 一時 D1 で FSRS パラメータの保存と出題を通す。ci には入れない
+e2e-params:
+    bash scripts/e2e-params.sh
+
 # 一時 D1 で出題ポリシーを通す。ci には入れない
 e2e-policy:
     bash scripts/e2e-policy.sh

@@ -1,9 +1,17 @@
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use poko_core::{ManifestEntry, Report, SyncNote, chunk, chunk_deletes, collect, lint_vault, plan};
+use poko_core::{
+    EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, IMPORT_BATCH_MAX, ImportResult, MIN_OPTIMIZE_ITEMS,
+    ManifestEntry, OptimizePlan, PutFsrsParams, Report, ReviewLog, ReviewLogPage, SyncNote, chunk,
+    chunk_deletes, collect, compute_fsrs_parameters, default_parameters, fsrs_items, lint_vault,
+    optimize_plan, parse_review_log_line, plan,
+};
 use serde::Serialize;
 
 #[derive(Parser)]
@@ -27,6 +35,41 @@ enum Command {
         #[arg(long)]
         endpoint: Option<String>,
     },
+    /// 復習ログを JSONL に書き出す
+    ///
+    /// 送り先は --endpoint、無ければ POKO_ENDPOINT、それも無ければ http://localhost:8787。
+    /// POKO_ACCESS_CLIENT_ID と POKO_ACCESS_CLIENT_SECRET が両方あるとき、全リクエストに Cloudflare Access のサービストークンを付ける。片方だけはエラー。
+    Export {
+        file: PathBuf,
+        /// Worker のベース URL。未指定なら POKO_ENDPOINT、それも無ければ http://localhost:8787
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// 1 ページの件数。1 から 500。既定 200
+        #[arg(long, hide = true)]
+        page_size: Option<usize>,
+    },
+    /// JSONL から復習ログを戻す
+    ///
+    /// 送り先は --endpoint、無ければ POKO_ENDPOINT、それも無ければ http://localhost:8787。
+    /// POKO_ACCESS_CLIENT_ID と POKO_ACCESS_CLIENT_SECRET が両方あるとき、全リクエストに Cloudflare Access のサービストークンを付ける。片方だけはエラー。
+    Import {
+        file: PathBuf,
+        /// Worker のベース URL。未指定なら POKO_ENDPOINT、それも無ければ http://localhost:8787
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// 復習ログから FSRS パラメータを推定する
+    ///
+    /// 送り先は --endpoint、無ければ POKO_ENDPOINT、それも無ければ http://localhost:8787。
+    /// POKO_ACCESS_CLIENT_ID と POKO_ACCESS_CLIENT_SECRET が両方あるとき、全リクエストに Cloudflare Access のサービストークンを付ける。片方だけはエラー。
+    Optimize {
+        /// Worker のベース URL。未指定なら POKO_ENDPOINT、それも無ければ http://localhost:8787
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// 計算して 21 個を表示するだけ。保存しない
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -34,6 +77,13 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Lint { dir } => lint_command(&dir),
         Command::Sync { vault, endpoint } => sync_command(&vault, endpoint.as_deref()),
+        Command::Export {
+            file,
+            endpoint,
+            page_size,
+        } => export_command(&file, endpoint.as_deref(), page_size),
+        Command::Import { file, endpoint } => import_command(&file, endpoint.as_deref()),
+        Command::Optimize { endpoint, dry_run } => optimize_command(endpoint.as_deref(), dry_run),
     }
 }
 
@@ -79,13 +129,7 @@ fn sync_command(vault: &Path, endpoint: Option<&str>) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        // 0 だとリダイレクトを追わず、3xx をそのまま返す。
-        .max_redirects(0)
-        .timeout_global(Some(Duration::from_secs(30)))
-        .build()
-        .into();
+    let agent = http_agent();
     let remote = match get_json::<Vec<ManifestEntry>>(
         &agent,
         &url(&endpoint, "/api/sync/manifest"),
@@ -138,6 +182,321 @@ fn print_findings(report: &Report) {
     for finding in &report.findings {
         println!("{}: {}: {}", finding.path, finding.kind, finding.detail);
     }
+}
+
+fn export_command(file: &Path, endpoint: Option<&str>, page_size: Option<usize>) -> ExitCode {
+    let page_size = match page_size {
+        None => EXPORT_PAGE_DEFAULT,
+        Some(size) if (1..=EXPORT_PAGE_MAX).contains(&size) => size,
+        Some(_) => {
+            eprintln!("page-size は 1 から {EXPORT_PAGE_MAX}");
+            return ExitCode::from(1);
+        }
+    };
+    let endpoint = resolve_endpoint(endpoint);
+    let access = match access_from_env() {
+        Ok(access) => access,
+        Err(code) => return code,
+    };
+    let parent = file
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "export.jsonl".to_owned());
+    let tmp = parent.join(format!(".{}.{name}.tmp", std::process::id()));
+    let count = match write_export(&http_agent(), &endpoint, access.as_ref(), &tmp, page_size) {
+        Ok(count) => count,
+        Err(code) => {
+            let _ = fs::remove_file(&tmp);
+            return code;
+        }
+    };
+    if let Err(err) = fs::rename(&tmp, file) {
+        let _ = fs::remove_file(&tmp);
+        eprintln!("{err}");
+        return ExitCode::from(1);
+    }
+    println!("exported {count}");
+    ExitCode::SUCCESS
+}
+
+fn write_export(
+    agent: &ureq::Agent,
+    endpoint: &str,
+    access: Option<&Access>,
+    tmp: &Path,
+    page_size: usize,
+) -> Result<usize, ExitCode> {
+    let mut writer = BufWriter::new(File::create(tmp).map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })?);
+    let mut count = 0_usize;
+    for_each_review_page(agent, endpoint, access, page_size, |rows| {
+        for row in rows {
+            let line = row.log.to_json_line().map_err(|err| {
+                eprintln!("{err}");
+                ExitCode::from(1)
+            })?;
+            writeln!(writer, "{line}").map_err(|err| {
+                eprintln!("{err}");
+                ExitCode::from(1)
+            })?;
+            count += 1;
+        }
+        Ok(())
+    })?;
+    writer.flush().map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })?;
+    writer.get_ref().sync_all().map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })?;
+    Ok(count)
+}
+
+fn for_each_review_page(
+    agent: &ureq::Agent,
+    endpoint: &str,
+    access: Option<&Access>,
+    page_size: usize,
+    mut visit: impl FnMut(&[ReviewLogPage]) -> Result<(), ExitCode>,
+) -> Result<(), ExitCode> {
+    let mut after = 0_i64;
+    loop {
+        let path = format!("/api/export/reviews?after={after}&limit={page_size}");
+        let rows = get_json::<Vec<ReviewLogPage>>(agent, &url(endpoint, &path), access)?;
+        let last = rows.last().map(|row| row.id);
+        let short = rows.len() < page_size;
+        visit(&rows)?;
+        if short {
+            break;
+        }
+        let Some(last) = last else {
+            break;
+        };
+        if last <= after {
+            eprintln!("export の id が進まなかった");
+            return Err(ExitCode::from(1));
+        }
+        after = last;
+    }
+    Ok(())
+}
+
+fn fetch_review_logs(
+    agent: &ureq::Agent,
+    endpoint: &str,
+    access: Option<&Access>,
+    page_size: usize,
+) -> Result<Vec<ReviewLog>, ExitCode> {
+    let mut logs = Vec::new();
+    for_each_review_page(agent, endpoint, access, page_size, |rows| {
+        logs.extend(rows.iter().map(|row| row.log.clone()));
+        Ok(())
+    })?;
+    Ok(logs)
+}
+
+fn optimize_command(endpoint: Option<&str>, dry_run: bool) -> ExitCode {
+    let endpoint = resolve_endpoint(endpoint);
+    let access = match access_from_env() {
+        Ok(access) => access,
+        Err(code) => return code,
+    };
+    let agent = http_agent();
+    let logs = match fetch_review_logs(&agent, &endpoint, access.as_ref(), EXPORT_PAGE_DEFAULT) {
+        Ok(logs) => logs,
+        Err(code) => return code,
+    };
+    let items = match fsrs_items(&logs) {
+        Ok(items) => items,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    let count = items.len();
+    if let OptimizePlan::TooFew { count } = optimize_plan(count, &default_parameters()) {
+        println!(
+            "件数不足: 学習に使える復習 {count} 件(最低 {MIN_OPTIMIZE_ITEMS} 件)。パラメータは変えない"
+        );
+        return ExitCode::SUCCESS;
+    }
+    println!("パラメータを計算している");
+    let parameters = match compute_fsrs_parameters(items) {
+        Ok(parameters) => parameters,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    match optimize_plan(count, &parameters) {
+        OptimizePlan::TooFew { count } => {
+            println!(
+                "件数不足: 学習に使える復習 {count} 件(最低 {MIN_OPTIMIZE_ITEMS} 件)。パラメータは変えない"
+            );
+            ExitCode::SUCCESS
+        }
+        OptimizePlan::SameAsDefault => {
+            println!("計算結果は既定値と同じ。パラメータは変えない");
+            ExitCode::SUCCESS
+        }
+        OptimizePlan::Save { parameters } => {
+            if dry_run {
+                let text: Vec<_> = parameters.iter().map(|value| value.to_string()).collect();
+                println!("{}", text.join(" "));
+                return ExitCode::SUCCESS;
+            }
+            let body = PutFsrsParams {
+                params: parameters.iter().copied().map(f64::from).collect(),
+                review_count: i64::try_from(count).unwrap_or(i64::MAX),
+            };
+            if let Err(code) = put_json(
+                &agent,
+                &url(&endpoint, "/api/params"),
+                &body,
+                access.as_ref(),
+            ) {
+                return code;
+            }
+            println!("保存した {count} 件");
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+const IMPORT_BODY_MAX: usize = 256 * 1024;
+
+fn import_command(file: &Path, endpoint: Option<&str>) -> ExitCode {
+    let text = match fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut errors = Vec::new();
+    let mut logs = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_review_log_line(line) {
+            Ok(log) => logs.push(log),
+            Err(err) => errors.push(format!("{}: {err}", index + 1)),
+        }
+    }
+    if !errors.is_empty() {
+        for error in errors {
+            eprintln!("{error}");
+        }
+        return ExitCode::from(1);
+    }
+    let rows = logs.len();
+    let mut seen = HashSet::new();
+    logs.retain(|log| seen.insert((log.card_key.clone(), log.reviewed_at)));
+    let mut duplicates = rows - logs.len();
+    let chunks = match chunk_import(&logs) {
+        Ok(chunks) => chunks,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    let endpoint = resolve_endpoint(endpoint);
+    let access = match access_from_env() {
+        Ok(access) => access,
+        Err(code) => return code,
+    };
+    let agent = http_agent();
+    let mut inserted = 0;
+    let mut missing = Vec::new();
+    let mut missing_seen = HashSet::new();
+    for chunk in &chunks {
+        let body = ImportBody { reviews: chunk };
+        let result = match post_json_read::<ImportResult>(
+            &agent,
+            &url(&endpoint, "/api/import/reviews"),
+            &body,
+            access.as_ref(),
+        ) {
+            Ok(result) => result,
+            Err(code) => return code,
+        };
+        inserted += result.inserted;
+        duplicates += result.duplicates;
+        for key in result.missing {
+            if missing_seen.insert(key.clone()) {
+                missing.push(key);
+            }
+        }
+    }
+    println!(
+        "imported {inserted}, duplicates {duplicates}, missing {}",
+        missing.len()
+    );
+    if missing.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        for key in missing {
+            eprintln!("{key}");
+        }
+        ExitCode::from(1)
+    }
+}
+
+fn chunk_import(logs: &[ReviewLog]) -> Result<Vec<Vec<ReviewLog>>, String> {
+    // {"reviews":} と配列の []。2 行目以降は区切りの , を足す。
+    const BODY_BASE: usize = "{\"reviews\":}".len() + 2;
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut current_len = 0usize;
+    for log in logs {
+        if current.len() == IMPORT_BATCH_MAX {
+            chunks.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        let encoded = log.to_json_line().map_err(|err| err.to_string())?;
+        let next_len = if current.is_empty() {
+            BODY_BASE + encoded.len()
+        } else {
+            current_len + 1 + encoded.len()
+        };
+        current.push(log.clone());
+        current_len = next_len;
+        if current_len > IMPORT_BODY_MAX {
+            current.pop();
+            if current.is_empty() {
+                return Err("1 行が 256KB を超えている".to_owned());
+            }
+            chunks.push(std::mem::take(&mut current));
+            current.push(log.clone());
+            current_len = BODY_BASE + encoded.len();
+            if current_len > IMPORT_BODY_MAX {
+                return Err("1 行が 256KB を超えている".to_owned());
+            }
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    Ok(chunks)
+}
+
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        // 0 だとリダイレクトを追わず、3xx をそのまま返す。
+        .max_redirects(0)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into()
 }
 
 fn resolve_endpoint(flag: Option<&str>) -> String {
@@ -217,6 +576,24 @@ fn get_json<T: serde::de::DeserializeOwned>(
     })
 }
 
+#[derive(Serialize)]
+struct ImportBody<'a> {
+    reviews: &'a [ReviewLog],
+}
+
+fn post_json_read<T: serde::de::DeserializeOwned>(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &impl Serialize,
+    access: Option<&Access>,
+) -> Result<T, ExitCode> {
+    let mut response = http(with_access(agent.post(url), access).send_json(body))?;
+    response.body_mut().read_json().map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })
+}
+
 fn post_json(
     agent: &ureq::Agent,
     url: &str,
@@ -224,6 +601,16 @@ fn post_json(
     access: Option<&Access>,
 ) -> Result<(), ExitCode> {
     http(with_access(agent.post(url), access).send_json(body))?;
+    Ok(())
+}
+
+fn put_json(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &impl Serialize,
+    access: Option<&Access>,
+) -> Result<(), ExitCode> {
+    http(with_access(agent.put(url), access).send_json(body))?;
     Ok(())
 }
 

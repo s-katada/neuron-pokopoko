@@ -14,8 +14,9 @@ const EXPORT_TO: &str = "../../../web/src/types/";
 
 /// 経過日数に対する想起確率。負の経過は 0 日として扱う。
 ///
-/// `difficulty` は FSRS の関数が受け取れるよう 0 を渡す。想起確率の式は stability だけを使う。
-pub fn retention(stability: f64, last_reviewed_at: i64, now: i64) -> f64 {
+/// `decay` はパラメータの 21 番目。未保存なら呼び出し側が既定値を渡す。
+/// `difficulty` は FSRS の関数が受け取れるよう 0 を渡す。想起確率の式は stability と decay だけを使う。
+pub fn retention(stability: f64, last_reviewed_at: i64, now: i64, decay: f32) -> f64 {
     let elapsed_secs = now.saturating_sub(last_reviewed_at).max(0);
     let elapsed_days = elapsed_secs as f64 / SECS_PER_DAY;
     f64::from(fsrs::current_retrievability(
@@ -24,7 +25,7 @@ pub fn retention(stability: f64, last_reviewed_at: i64, now: i64) -> f64 {
             difficulty: 0.0,
         },
         elapsed_days as f32,
-        fsrs::FSRS6_DEFAULT_DECAY,
+        decay,
     ))
 }
 
@@ -126,20 +127,20 @@ struct Group<'a> {
 }
 
 /// 大 → 中 → 小 → ノート。各階層の定着率は、配下の `review` カードの算術平均。
-pub fn build_tree(cards: &[StatCard], now: i64) -> Tree {
+pub fn build_tree(cards: &[StatCard], now: i64, decay: f32) -> Tree {
     let root = group_cards(cards);
     Tree {
-        overall: mean_retention(&root.cards, now),
+        overall: mean_retention(&root.cards, now, decay),
         majors: root
             .children
             .iter()
-            .map(|(name, group)| major_stats(name, group, now))
+            .map(|(name, group)| major_stats(name, group, now, decay))
             .collect(),
     }
 }
 
 /// ノートが無ければ `None`。カードは `stable_key` 順。
-pub fn note_detail(cards: &[StatCard], note_id: &str, now: i64) -> Option<NoteDetail> {
+pub fn note_detail(cards: &[StatCard], note_id: &str, now: i64, decay: f32) -> Option<NoteDetail> {
     let mut matched: Vec<&StatCard> = cards
         .iter()
         .filter(|card| card.note_id == note_id)
@@ -164,7 +165,7 @@ pub fn note_detail(cards: &[StatCard], note_id: &str, now: i64) -> Option<NoteDe
                 question: card.question.clone(),
                 fsrs_state: card.fsrs_state.clone(),
                 due_at: card.due_at,
-                retention: card_retention(card, now),
+                retention: card_retention(card, now, decay),
             })
             .collect(),
     })
@@ -249,15 +250,15 @@ fn group_cards(cards: &[StatCard]) -> Group<'_> {
 
 macro_rules! rollup {
     ($fn_name:ident, $struct_name:ident, $name_field:ident, $children_field:ident, $child_fn:ident) => {
-        fn $fn_name(name: &str, group: &Group<'_>, now: i64) -> $struct_name {
+        fn $fn_name(name: &str, group: &Group<'_>, now: i64, decay: f32) -> $struct_name {
             $struct_name {
                 $name_field: name.to_owned(),
-                retention: mean_retention(&group.cards, now),
+                retention: mean_retention(&group.cards, now, decay),
                 card_count: card_count(&group.cards),
                 $children_field: group
                     .children
                     .iter()
-                    .map(|(child, group)| $child_fn(child, group, now))
+                    .map(|(child, group)| $child_fn(child, group, now, decay))
                     .collect(),
             }
         }
@@ -267,16 +268,16 @@ macro_rules! rollup {
 rollup!(major_stats, MajorStats, major, middles, middle_stats);
 rollup!(middle_stats, MiddleStats, middle, minors, minor_stats);
 
-fn minor_stats(name: &str, group: &Group<'_>, now: i64) -> MinorStats {
+fn minor_stats(name: &str, group: &Group<'_>, now: i64, decay: f32) -> MinorStats {
     MinorStats {
         minor: name.to_owned(),
-        retention: mean_retention(&group.cards, now),
+        retention: mean_retention(&group.cards, now, decay),
         card_count: card_count(&group.cards),
-        notes: notes_of(group, now),
+        notes: notes_of(group, now, decay),
     }
 }
 
-fn notes_of(minor: &Group<'_>, now: i64) -> Vec<NoteStats> {
+fn notes_of(minor: &Group<'_>, now: i64, decay: f32) -> Vec<NoteStats> {
     let mut notes: Vec<NoteStats> = minor
         .children
         .iter()
@@ -291,7 +292,7 @@ fn notes_of(minor: &Group<'_>, now: i64) -> Vec<NoteStats> {
             NoteStats {
                 note_id: (*note_id).to_owned(),
                 title,
-                retention: mean_retention(&group.cards, now),
+                retention: mean_retention(&group.cards, now, decay),
                 card_count: card_count(&group.cards),
             }
         })
@@ -304,11 +305,11 @@ fn notes_of(minor: &Group<'_>, now: i64) -> Vec<NoteStats> {
     notes
 }
 
-fn mean_retention(cards: &[&StatCard], now: i64) -> Option<f64> {
+fn mean_retention(cards: &[&StatCard], now: i64, decay: f32) -> Option<f64> {
     let mut sum = 0.0;
     let mut count = 0u32;
     for card in cards {
-        if let Some(value) = card_retention(card, now) {
+        if let Some(value) = card_retention(card, now, decay) {
             sum += value;
             count += 1;
         }
@@ -316,11 +317,16 @@ fn mean_retention(cards: &[&StatCard], now: i64) -> Option<f64> {
     (count > 0).then_some(sum / f64::from(count))
 }
 
-fn card_retention(card: &StatCard, now: i64) -> Option<f64> {
+fn card_retention(card: &StatCard, now: i64, decay: f32) -> Option<f64> {
     if card.fsrs_state != "review" {
         return None;
     }
-    Some(retention(card.stability?, card.last_reviewed_at?, now))
+    Some(retention(
+        card.stability?,
+        card.last_reviewed_at?,
+        now,
+        decay,
+    ))
 }
 
 fn card_count(cards: &[&StatCard]) -> u32 {

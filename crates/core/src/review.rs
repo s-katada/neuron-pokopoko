@@ -235,6 +235,7 @@ pub fn answer_statements(
     rating: Rating,
     now_unix: i64,
     response: Option<&str>,
+    parameters: &[f32; 21],
 ) -> Result<Answer, ScheduleError> {
     let card = match (state.fsrs_state.as_str(), state.stability) {
         ("new", _) | (_, None) => Card::New,
@@ -246,7 +247,7 @@ pub fn answer_statements(
             reviewed_at_unix: state.last_reviewed_at.unwrap_or(now_unix),
         },
     };
-    let scheduled = schedule(card, rating, now_unix)?;
+    let scheduled = schedule(card, rating, now_unix, parameters)?;
     let due_at = now_unix + (f64::from(scheduled.interval_days) * 86_400.0).round() as i64;
     let lapses = i64::from(state.fsrs_state == "review" && rating == Rating::Again);
     let stability = f64::from(scheduled.memory.stability);

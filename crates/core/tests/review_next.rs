@@ -121,7 +121,15 @@ fn load_state(conn: &Connection, key: &str) -> CardState {
 
 fn answer(conn: &Connection, key: &str, rating: Rating) {
     let state = load_state(conn, key);
-    let planned = answer_statements(key, &state, rating, NOW, None).unwrap();
+    let planned = answer_statements(
+        key,
+        &state,
+        rating,
+        NOW,
+        None,
+        &poko_core::default_parameters(),
+    )
+    .unwrap();
     apply(conn, &planned.statements);
 }
 
@@ -130,7 +138,15 @@ fn good_answer_schedules_review_and_hides_same_note_cards() {
     let conn = db();
     let state = load_state(&conn, "b1");
     assert_eq!(state.fsrs_state, "new");
-    let planned = answer_statements("b1", &state, Rating::Good, NOW, None).unwrap();
+    let planned = answer_statements(
+        "b1",
+        &state,
+        Rating::Good,
+        NOW,
+        None,
+        &poko_core::default_parameters(),
+    )
+    .unwrap();
     let expected_due = NOW + (f64::from(planned.interval_days) * 86_400.0).round() as i64;
     assert_eq!(planned.due_at, expected_due);
     assert!(planned.due_at > NOW);
@@ -177,7 +193,15 @@ fn answer_appends_one_review_and_increments_reps() {
 fn answer_stores_response_and_leaves_fsrs_columns_updated() {
     let conn = db();
     let state = load_state(&conn, "b1");
-    let planned = answer_statements("b1", &state, Rating::Good, NOW, Some("覚えている")).unwrap();
+    let planned = answer_statements(
+        "b1",
+        &state,
+        Rating::Good,
+        NOW,
+        Some("覚えている"),
+        &poko_core::default_parameters(),
+    )
+    .unwrap();
     apply(&conn, &planned.statements);
     let (response, fsrs_state, reps, due_at): (Option<String>, String, i64, i64) = conn
         .query_row(

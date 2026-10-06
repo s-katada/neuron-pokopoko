@@ -1,7 +1,7 @@
 use poko_core::{
     StatCard, SyncCard, SyncNote, Value, build_tree, daily_counts, daily_reviews_query,
-    note_detail, note_stat_cards_query, retention, stat_cards_query, study_day_start,
-    upsert_statements,
+    default_decay, note_detail, note_stat_cards_query, retention, stat_cards_query,
+    study_day_start, upsert_statements,
 };
 use rusqlite::{Connection, params_from_iter};
 
@@ -13,19 +13,19 @@ const NOW: i64 = 1_791_140_400;
 fn retention_is_point_nine_when_elapsed_equals_stability() {
     let stability = 10.0;
     let reviewed_at = NOW - (stability as i64) * 86_400;
-    let got = retention(stability, reviewed_at, NOW);
+    let got = retention(stability, reviewed_at, NOW, default_decay());
     assert!((got - 0.9).abs() < 1e-4, "{got}");
 }
 
 #[test]
 fn retention_is_one_when_no_time_has_elapsed() {
-    let got = retention(4.0, NOW, NOW);
+    let got = retention(4.0, NOW, NOW, default_decay());
     assert!((got - 1.0).abs() < 1e-4, "{got}");
 }
 
 #[test]
 fn negative_elapsed_is_clamped_to_zero() {
-    let got = retention(10.0, NOW + 86_400, NOW);
+    let got = retention(10.0, NOW + 86_400, NOW, default_decay());
     assert!((got - 1.0).abs() < 1e-4, "{got}");
 }
 
@@ -34,9 +34,17 @@ fn retention_matches_an_independent_fsrs6_calculation() {
     // Python で式だけを別計算した値。decay = 0.1542、
     // factor = 0.9 ** (1 / -decay) - 1、R = (30 / 10 * factor + 1) ** (-decay)。
     let reviewed_at = NOW - 30 * 86_400;
-    let got = retention(10.0, reviewed_at, NOW);
+    let got = retention(10.0, reviewed_at, NOW, default_decay());
     let expected = 0.809_388_103_573_170_8;
     assert!((got - expected).abs() < 1e-4, "{got}");
+}
+
+#[test]
+fn a_different_decay_changes_retention() {
+    let reviewed_at = NOW - 30 * 86_400;
+    let base = retention(10.0, reviewed_at, NOW, default_decay());
+    let changed = retention(10.0, reviewed_at, NOW, 0.5);
+    assert!((base - changed).abs() > 1e-3, "{base} {changed}");
 }
 
 #[test]
@@ -55,7 +63,7 @@ fn tree_retention_is_the_mean_of_cards_not_of_children() {
     cards.insert(0, untouched);
     cards.push(untouched_again);
 
-    let tree = build_tree(&cards, NOW);
+    let tree = build_tree(&cards, NOW, default_decay());
     let learned = &tree.majors[0];
     let minor = &learned.middles[0].minors[0];
     let parent = minor.retention.expect("対象カードがある");
@@ -90,7 +98,7 @@ fn note_detail_skips_retention_until_the_card_is_reviewed() {
         reviewed("a1", "beta", "rev-beta", 0, "露光とは？"),
         fresh("a1", "beta", "new-beta", "未学習の質問"),
     ];
-    let detail = note_detail(&cards, "a1", NOW).expect("ノートがある");
+    let detail = note_detail(&cards, "a1", NOW, default_decay()).expect("ノートがある");
     assert_eq!(detail.title, "beta");
     let new_card = detail
         .cards
@@ -109,7 +117,7 @@ fn note_detail_skips_retention_until_the_card_is_reviewed() {
     assert_eq!(review.due_at, Some(NOW + 86_400));
     assert_eq!(review.level, "beginner");
     assert_eq!(review.question, "露光とは？");
-    assert!(note_detail(&cards, "missing", NOW).is_none());
+    assert!(note_detail(&cards, "missing", NOW, default_decay()).is_none());
 }
 
 #[test]

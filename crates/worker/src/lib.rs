@@ -10,12 +10,16 @@ use axum::{
     routing::{get, post},
 };
 use poko_core::{
-    AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
-    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCardRow, StatCard,
-    Statement, SyncNote, Value, answer_statements, build_tree, card_state_query, daily_counts,
-    daily_reviews_query, delete_statements, next_card_query, normalize_response, note_detail,
-    note_stat_cards_query, review_card_from_row, stat_cards_query, statements_for,
-    upsert_statements,
+    AnswerRequest, AnswerResponse, CardState, EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, FsrsParamsBody,
+    IMPORT_BATCH_MAX, ImportResult, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST,
+    ManifestEntry, NextResponse, PutFsrsParams, Rating, ReviewCardRow, ReviewLog, ReviewLogPage,
+    StatCard, Statement, SyncNote, Value, answer_statements, build_tree, card_state_query,
+    daily_counts, daily_reviews_query, decay_of, delete_statements, empty_fsrs_params,
+    export_reviews_query, fsrs_params_query, import_reviews_statement, missing_cards_query,
+    next_card_query, normalize_response, note_detail, note_stat_cards_query, parameters_or_default,
+    rebuild_cards_statement, review_card_from_row, reviews_json, stat_cards_query, statements_for,
+    upsert_fsrs_params_statement, upsert_statements, validate_parameters, validate_review_count,
+    validate_review_log,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -38,10 +42,13 @@ fn router(env: Env) -> Result<Router> {
         .route("/api/sync/notes", post(sync_notes))
         .route("/api/sync/delete", post(sync_delete))
         .route("/api/review/next", get(review_next))
+        .route("/api/params", get(get_params).put(put_params))
         .route("/api/review/answer", post(review_answer))
         .route("/api/tree", get(tree))
         .route("/api/notes/{id}", get(note_stats))
         .route("/api/stats/daily", get(daily_stats))
+        .route("/api/export/reviews", get(export_reviews))
+        .route("/api/import/reviews", post(import_reviews))
         .with_state(state))
 }
 
@@ -148,6 +155,69 @@ async fn sync_delete(
     Json(DeleteResult { deleted }).into_response()
 }
 
+#[derive(Deserialize)]
+struct ParamsRow {
+    params: String,
+    review_count: i64,
+    updated_at: i64,
+}
+
+#[worker::send]
+async fn get_params(State(state): State<AppState>) -> Response {
+    match query_first::<ParamsRow>(&state.db, &fsrs_params_query()).await {
+        Ok(None) => Json(empty_fsrs_params()).into_response(),
+        Ok(Some(row)) => Json(FsrsParamsBody {
+            params: serde_json::from_str(&row.params).ok(),
+            review_count: Some(row.review_count),
+            updated_at: Some(row.updated_at),
+        })
+        .into_response(),
+        Err(err) => server_error(err),
+    }
+}
+
+#[worker::send]
+async fn put_params(
+    State(state): State<AppState>,
+    body: Result<Json<PutFsrsParams>, JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    if let Err(err) =
+        validate_review_count(body.review_count).and_then(|()| validate_parameters(&body.params))
+    {
+        return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
+    }
+    let json = match serde_json::to_string(&body.params) {
+        Ok(json) => json,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let updated_at = now_unix();
+    let statement = upsert_fsrs_params_statement(&json, body.review_count, updated_at);
+    if let Err(err) = execute_batch(&state.db, &[statement]).await {
+        return server_error(err);
+    }
+    Json(FsrsParamsBody {
+        params: Some(body.params),
+        review_count: Some(body.review_count),
+        updated_at: Some(updated_at),
+    })
+    .into_response()
+}
+
+async fn load_parameters(db: &D1Database) -> Result<[f32; 21]> {
+    let row = query_first::<ParamsRow>(db, &fsrs_params_query()).await?;
+    Ok(parameters_or_default(
+        row.as_ref().map(|row| row.params.as_str()),
+    ))
+}
+
+async fn load_decay(db: &D1Database) -> Result<f32> {
+    Ok(decay_of(&load_parameters(db).await?))
+}
+
 #[worker::send]
 async fn review_next(State(state): State<AppState>) -> Response {
     match query_first::<ReviewCardRow>(&state.db, &next_card_query(now_unix())).await {
@@ -177,6 +247,10 @@ async fn review_answer(
         Ok(response) => response,
         Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
     };
+    let parameters = match load_parameters(&state.db).await {
+        Ok(parameters) => parameters,
+        Err(err) => return server_error(err),
+    };
     let card_state =
         match query_first::<CardState>(&state.db, &card_state_query(&body.stable_key)).await {
             Ok(Some(card_state)) => card_state,
@@ -189,6 +263,7 @@ async fn review_answer(
         rating,
         now_unix(),
         response.as_deref(),
+        &parameters,
     ) {
         Ok(answer) => answer,
         Err(_) => {
@@ -212,8 +287,12 @@ async fn review_answer(
 #[worker::send]
 async fn tree(State(state): State<AppState>) -> Response {
     let now = now_unix();
+    let decay = match load_decay(&state.db).await {
+        Ok(decay) => decay,
+        Err(err) => return server_error(err),
+    };
     match query_all::<StatCard>(&state.db, &stat_cards_query()).await {
-        Ok(rows) => Json(build_tree(&rows, now)).into_response(),
+        Ok(rows) => Json(build_tree(&rows, now, decay)).into_response(),
         Err(err) => server_error(err),
     }
 }
@@ -221,8 +300,12 @@ async fn tree(State(state): State<AppState>) -> Response {
 #[worker::send]
 async fn note_stats(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let now = now_unix();
+    let decay = match load_decay(&state.db).await {
+        Ok(decay) => decay,
+        Err(err) => return server_error(err),
+    };
     match query_all::<StatCard>(&state.db, &note_stat_cards_query(&id)).await {
-        Ok(rows) => match note_detail(&rows, &id, now) {
+        Ok(rows) => match note_detail(&rows, &id, now, decay) {
             Some(detail) => Json(detail).into_response(),
             None => (StatusCode::NOT_FOUND, "ノートがない".to_owned()).into_response(),
         },
@@ -249,6 +332,114 @@ async fn daily_stats(State(state): State<AppState>, uri: Uri) -> Response {
         }
         Err(err) => server_error(err),
     }
+}
+
+#[worker::send]
+async fn export_reviews(State(state): State<AppState>, uri: Uri) -> Response {
+    let (after, limit) = match parse_export_query(uri.query()) {
+        Ok(parsed) => parsed,
+        Err(message) => return (StatusCode::BAD_REQUEST, message.to_owned()).into_response(),
+    };
+    match query_all::<ReviewLogPage>(&state.db, &export_reviews_query(after, limit)).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(err) => server_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    reviews: Vec<ReviewLog>,
+}
+
+#[derive(Deserialize)]
+struct MissingKey {
+    card_key: String,
+}
+
+#[worker::send]
+async fn import_reviews(
+    State(state): State<AppState>,
+    body: Result<Json<ImportBody>, JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    if body.reviews.len() > IMPORT_BATCH_MAX {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("行数が {IMPORT_BATCH_MAX} を超えている"),
+        )
+            .into_response();
+    }
+    for review in &body.reviews {
+        if let Err(err) = validate_review_log(review) {
+            return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
+        }
+    }
+    let json = match reviews_json(&body.reviews) {
+        Ok(json) => json,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let missing_rows = match query_all::<MissingKey>(&state.db, &missing_cards_query(&json)).await {
+        Ok(rows) => rows,
+        Err(err) => return server_error(err),
+    };
+    let mut missing = Vec::new();
+    for row in &missing_rows {
+        if !missing.contains(&row.card_key) {
+            missing.push(row.card_key.clone());
+        }
+    }
+    let statements = [
+        import_reviews_statement(&json),
+        rebuild_cards_statement(&json, now_unix()),
+    ];
+    let inserted = match execute_changes(&state.db, &statements).await {
+        Ok(inserted) => inserted,
+        Err(err) => return server_error(err),
+    };
+    let accounted = inserted + missing_rows.len();
+    if accounted > body.reviews.len() {
+        return server_error("取り込み件数が行数を超えた");
+    }
+    Json(ImportResult {
+        inserted,
+        duplicates: body.reviews.len() - accounted,
+        missing,
+    })
+    .into_response()
+}
+
+fn parse_export_query(query: Option<&str>) -> Result<(i64, usize), &'static str> {
+    let Some(query) = query.filter(|text| !text.is_empty()) else {
+        return Ok((0, EXPORT_PAGE_DEFAULT));
+    };
+    let mut after = None;
+    let mut limit = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "after" => {
+                let parsed: i64 = value.parse().map_err(|_| "after が不正")?;
+                if parsed < 0 {
+                    return Err("after は 0 以上");
+                }
+                after = Some(parsed);
+            }
+            "limit" => {
+                let parsed: usize = value.parse().map_err(|_| "limit が不正")?;
+                if !(1..=EXPORT_PAGE_MAX).contains(&parsed) {
+                    return Err("limit は 1 から 500");
+                }
+                limit = Some(parsed);
+            }
+            _ => {}
+        }
+    }
+    Ok((after.unwrap_or(0), limit.unwrap_or(EXPORT_PAGE_DEFAULT)))
 }
 
 fn parse_days(query: Option<&str>) -> Result<usize, &'static str> {
@@ -295,9 +486,25 @@ async fn query_first<T: DeserializeOwned>(
         .await
 }
 
+async fn execute_changes(db: &D1Database, statements: &[Statement]) -> Result<usize> {
+    let results = execute_prepared(db, statements).await?;
+    let meta = results
+        .first()
+        .ok_or_else(|| Error::RustError("D1 batch が空".into()))?
+        .meta()?
+        .ok_or_else(|| Error::RustError("D1 の changes が無い".into()))?;
+    meta.changes
+        .ok_or_else(|| Error::RustError("D1 の changes が無い".into()))
+}
+
 async fn execute_batch(db: &D1Database, statements: &[Statement]) -> Result<()> {
+    execute_prepared(db, statements).await?;
+    Ok(())
+}
+
+async fn execute_prepared(db: &D1Database, statements: &[Statement]) -> Result<Vec<D1Result>> {
     if statements.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut prepared = Vec::with_capacity(statements.len());
     for statement in statements {
@@ -313,7 +520,7 @@ async fn execute_batch(db: &D1Database, statements: &[Statement]) -> Result<()> 
             return Err(Error::RustError(message));
         }
     }
-    Ok(())
+    Ok(results)
 }
 
 fn to_d1(value: &Value) -> JsValue {
