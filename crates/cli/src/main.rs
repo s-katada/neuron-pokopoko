@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use poko_core::{
-    EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, IMPORT_BATCH_MAX, ImportResult, ManifestEntry, Report,
-    ReviewLog, ReviewLogPage, SyncNote, chunk, chunk_deletes, collect, lint_vault,
-    parse_review_log_line, plan,
+    EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, IMPORT_BATCH_MAX, ImportResult, MIN_OPTIMIZE_ITEMS,
+    ManifestEntry, OptimizePlan, PutFsrsParams, Report, ReviewLog, ReviewLogPage, SyncNote, chunk,
+    chunk_deletes, collect, compute_fsrs_parameters, default_parameters, fsrs_items, lint_vault,
+    optimize_plan, parse_review_log_line, plan,
 };
 use serde::Serialize;
 
@@ -57,6 +58,18 @@ enum Command {
         #[arg(long)]
         endpoint: Option<String>,
     },
+    /// 復習ログから FSRS パラメータを推定する
+    ///
+    /// 送り先は --endpoint、無ければ POKO_ENDPOINT、それも無ければ http://localhost:8787。
+    /// POKO_ACCESS_CLIENT_ID と POKO_ACCESS_CLIENT_SECRET が両方あるとき、全リクエストに Cloudflare Access のサービストークンを付ける。片方だけはエラー。
+    Optimize {
+        /// Worker のベース URL。未指定なら POKO_ENDPOINT、それも無ければ http://localhost:8787
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// 計算して 21 個を表示するだけ。保存しない
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -70,6 +83,7 @@ fn main() -> ExitCode {
             page_size,
         } => export_command(&file, endpoint.as_deref(), page_size),
         Command::Import { file, endpoint } => import_command(&file, endpoint.as_deref()),
+        Command::Optimize { endpoint, dry_run } => optimize_command(endpoint.as_deref(), dry_run),
     }
 }
 
@@ -220,14 +234,9 @@ fn write_export(
         eprintln!("{err}");
         ExitCode::from(1)
     })?);
-    let mut after = 0_i64;
     let mut count = 0_usize;
-    loop {
-        let path = format!("/api/export/reviews?after={after}&limit={page_size}");
-        let rows = get_json::<Vec<ReviewLogPage>>(agent, &url(endpoint, &path), access)?;
-        let last = rows.last().map(|row| row.id);
-        let short = rows.len() < page_size;
-        for row in &rows {
+    for_each_review_page(agent, endpoint, access, page_size, |rows| {
+        for row in rows {
             let line = row.log.to_json_line().map_err(|err| {
                 eprintln!("{err}");
                 ExitCode::from(1)
@@ -238,6 +247,33 @@ fn write_export(
             })?;
             count += 1;
         }
+        Ok(())
+    })?;
+    writer.flush().map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })?;
+    writer.get_ref().sync_all().map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })?;
+    Ok(count)
+}
+
+fn for_each_review_page(
+    agent: &ureq::Agent,
+    endpoint: &str,
+    access: Option<&Access>,
+    page_size: usize,
+    mut visit: impl FnMut(&[ReviewLogPage]) -> Result<(), ExitCode>,
+) -> Result<(), ExitCode> {
+    let mut after = 0_i64;
+    loop {
+        let path = format!("/api/export/reviews?after={after}&limit={page_size}");
+        let rows = get_json::<Vec<ReviewLogPage>>(agent, &url(endpoint, &path), access)?;
+        let last = rows.last().map(|row| row.id);
+        let short = rows.len() < page_size;
+        visit(&rows)?;
         if short {
             break;
         }
@@ -250,15 +286,89 @@ fn write_export(
         }
         after = last;
     }
-    writer.flush().map_err(|err| {
-        eprintln!("{err}");
-        ExitCode::from(1)
+    Ok(())
+}
+
+fn fetch_review_logs(
+    agent: &ureq::Agent,
+    endpoint: &str,
+    access: Option<&Access>,
+    page_size: usize,
+) -> Result<Vec<ReviewLog>, ExitCode> {
+    let mut logs = Vec::new();
+    for_each_review_page(agent, endpoint, access, page_size, |rows| {
+        logs.extend(rows.iter().map(|row| row.log.clone()));
+        Ok(())
     })?;
-    writer.get_ref().sync_all().map_err(|err| {
-        eprintln!("{err}");
-        ExitCode::from(1)
-    })?;
-    Ok(count)
+    Ok(logs)
+}
+
+fn optimize_command(endpoint: Option<&str>, dry_run: bool) -> ExitCode {
+    let endpoint = resolve_endpoint(endpoint);
+    let access = match access_from_env() {
+        Ok(access) => access,
+        Err(code) => return code,
+    };
+    let agent = http_agent();
+    let logs = match fetch_review_logs(&agent, &endpoint, access.as_ref(), EXPORT_PAGE_DEFAULT) {
+        Ok(logs) => logs,
+        Err(code) => return code,
+    };
+    let items = match fsrs_items(&logs) {
+        Ok(items) => items,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    let count = items.len();
+    if let OptimizePlan::TooFew { count } = optimize_plan(count, &default_parameters()) {
+        println!(
+            "件数不足: 学習に使える復習 {count} 件(最低 {MIN_OPTIMIZE_ITEMS} 件)。パラメータは変えない"
+        );
+        return ExitCode::SUCCESS;
+    }
+    println!("パラメータを計算している");
+    let parameters = match compute_fsrs_parameters(items) {
+        Ok(parameters) => parameters,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    match optimize_plan(count, &parameters) {
+        OptimizePlan::TooFew { count } => {
+            println!(
+                "件数不足: 学習に使える復習 {count} 件(最低 {MIN_OPTIMIZE_ITEMS} 件)。パラメータは変えない"
+            );
+            ExitCode::SUCCESS
+        }
+        OptimizePlan::SameAsDefault => {
+            println!("計算結果は既定値と同じ。パラメータは変えない");
+            ExitCode::SUCCESS
+        }
+        OptimizePlan::Save { parameters } => {
+            if dry_run {
+                let text: Vec<_> = parameters.iter().map(|value| value.to_string()).collect();
+                println!("{}", text.join(" "));
+                return ExitCode::SUCCESS;
+            }
+            let body = PutFsrsParams {
+                params: parameters.iter().copied().map(f64::from).collect(),
+                review_count: i64::try_from(count).unwrap_or(i64::MAX),
+            };
+            if let Err(code) = put_json(
+                &agent,
+                &url(&endpoint, "/api/params"),
+                &body,
+                access.as_ref(),
+            ) {
+                return code;
+            }
+            println!("保存した {count} 件");
+            ExitCode::SUCCESS
+        }
+    }
 }
 
 const IMPORT_BODY_MAX: usize = 256 * 1024;
@@ -491,6 +601,16 @@ fn post_json(
     access: Option<&Access>,
 ) -> Result<(), ExitCode> {
     http(with_access(agent.post(url), access).send_json(body))?;
+    Ok(())
+}
+
+fn put_json(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &impl Serialize,
+    access: Option<&Access>,
+) -> Result<(), ExitCode> {
+    http(with_access(agent.put(url), access).send_json(body))?;
     Ok(())
 }
 
