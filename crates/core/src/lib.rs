@@ -2,6 +2,7 @@ mod day;
 mod import;
 mod lint;
 pub mod note;
+mod params;
 mod review;
 mod review_log;
 mod schedule;
@@ -20,6 +21,11 @@ pub use import::{
 };
 pub use lint::{Finding, IntegrationRefReason, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
+pub use params::{
+    FSRS_PARAMETER_LEN, FsrsParamsBody, ParamsError, PutFsrsParams, decay_of, default_decay,
+    default_parameters, empty_fsrs_params, fsrs_params_query, parameters_or_default,
+    upsert_fsrs_params_statement, validate_parameters, validate_review_count,
+};
 pub use review::{
     Answer, AnswerRequest, AnswerResponse, CardState, MAX_RESPONSE_CHARS, NextResponse,
     ResponseError, ReviewCard, ReviewCardRow, answer_statements, card_state_query, next_card_query,
