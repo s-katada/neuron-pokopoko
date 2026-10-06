@@ -23,3 +23,4 @@ Worker は Rust（workers-rs）で続行する。TypeScript（Hono）への退�
 - wasm 側の失敗は CI の `just ci`（wasm の clippy と build）が検出する。
 - fsrs は rand と rayon を無条件に依存として引く。wasm32 では問題にならなかった。
 - worker-build のバージョン固定は、必要になったら flake に固定して対応する。
+- 2026-10-06: CI の Linux で cargo install 版が libssl を見つけられず失敗したため、nixpkgs の worker-build を flake で固定した。

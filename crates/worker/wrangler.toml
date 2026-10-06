@@ -5,7 +5,7 @@ workers_dev = true
 preview_urls = false
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+command = "worker-build --release"
 
 # navigate はアセット優先で index.html が返る。/api は Worker 直行にする。
 [assets]
