@@ -36,6 +36,7 @@
             pkgs.nodejs_latest
             pkgs.pnpm
             pkgs.wrangler
+            pkgs.worker-build # wrangler のカスタムビルド。worker crate とバージョンを揃える
             pkgs.binaryen # wasm-opt
             pkgs.imagemagick # magick
             pkgs.actionlint # GitHub Actions
