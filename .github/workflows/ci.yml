@@ -16,6 +16,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - run: nix develop . --command just ci
       - run: nix develop . --command bash -c "cd web && pnpm install --frozen-lockfile && pnpm check && pnpm test"
+      - run: nix develop . --command bash -c "cd web && pnpm build && cd ../crates/worker && wrangler deploy --dry-run --outdir \"\$(mktemp -d)\""
 
   check-deploy:
     needs: ci
