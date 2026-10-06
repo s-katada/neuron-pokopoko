@@ -51,6 +51,10 @@ e2e-review:
 e2e-export:
     bash scripts/e2e-export.sh
 
+# 一時 D1 で JSONL からの再投入を通す。ci には入れない
+e2e-import:
+    bash scripts/e2e-import.sh
+
 # 一時 D1 で出題ポリシーを通す。ci には入れない
 e2e-policy:
     bash scripts/e2e-policy.sh

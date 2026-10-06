@@ -14,10 +14,11 @@ e2e_init() {
   trap e2e_cleanup EXIT
 }
 
-e2e_cleanup() {
-  if [[ -n "$PID" ]]; then
+e2e_stop_worker() {
+  if [[ -n "${PID:-}" ]]; then
     kill "$PID" 2>/dev/null || true
     pkill -P "$PID" 2>/dev/null || true
+    PID=""
   fi
   if command -v lsof >/dev/null 2>&1; then
     local listeners
@@ -27,6 +28,50 @@ e2e_cleanup() {
       kill $listeners 2>/dev/null || true
     fi
   fi
+  local _
+  for _ in $(seq 1 50); do
+    if ! curl -sf "$ENDPOINT/api/health" >/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "wrangler が止まらない" >&2
+  return 1
+}
+
+e2e_start_worker() {
+  (
+    cd "$ROOT/crates/worker"
+    wrangler d1 migrations apply neuron-pokopoko --local --persist-to "$STATE"
+  )
+  (
+    cd "$ROOT/crates/worker"
+    wrangler dev --port 8788 --persist-to "$STATE"
+  ) >"$TMP/wrangler.log" 2>&1 &
+  PID=$!
+
+  local ready=0
+  for _ in $(seq 1 180); do
+    if curl -sf "$ENDPOINT/api/health" >/dev/null; then
+      ready=1
+      break
+    fi
+    if ! kill -0 "$PID" 2>/dev/null; then
+      echo "wrangler dev が終了した" >&2
+      tail -n 40 "$TMP/wrangler.log" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  if [[ "$ready" != 1 ]]; then
+    echo "health が 180 秒以内に返らなかった" >&2
+    tail -n 40 "$TMP/wrangler.log" >&2
+    return 1
+  fi
+}
+
+e2e_cleanup() {
+  e2e_stop_worker || true
   if [[ -n "$TMP" ]]; then
     rm -rf "$TMP"
   fi
@@ -80,34 +125,5 @@ e2e_prepare() {
   fi
   cargo build -q -p poko
   POKO="$ROOT/target/debug/poko"
-
-  (
-    cd "$ROOT/crates/worker"
-    wrangler d1 migrations apply neuron-pokopoko --local --persist-to "$STATE"
-  )
-
-  (
-    cd "$ROOT/crates/worker"
-    wrangler dev --port 8788 --persist-to "$STATE"
-  ) >"$TMP/wrangler.log" 2>&1 &
-  PID=$!
-
-  local ready=0
-  for _ in $(seq 1 180); do
-    if curl -sf "$ENDPOINT/api/health" >/dev/null; then
-      ready=1
-      break
-    fi
-    if ! kill -0 "$PID" 2>/dev/null; then
-      echo "wrangler dev が終了した" >&2
-      tail -n 40 "$TMP/wrangler.log" >&2
-      exit 1
-    fi
-    sleep 1
-  done
-  if [[ "$ready" != 1 ]]; then
-    echo "health が 180 秒以内に返らなかった" >&2
-    tail -n 40 "$TMP/wrangler.log" >&2
-    exit 1
-  fi
+  e2e_start_worker
 }
