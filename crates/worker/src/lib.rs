@@ -11,11 +11,13 @@ use axum::{
 };
 use poko_core::{
     AnswerRequest, AnswerResponse, CardState, EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX,
-    MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating,
-    ReviewCardRow, ReviewLogPage, StatCard, Statement, SyncNote, Value, answer_statements,
-    build_tree, card_state_query, daily_counts, daily_reviews_query, delete_statements,
-    export_reviews_query, next_card_query, normalize_response, note_detail, note_stat_cards_query,
-    review_card_from_row, stat_cards_query, statements_for, upsert_statements,
+    IMPORT_BATCH_MAX, ImportResult, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST,
+    ManifestEntry, NextResponse, Rating, ReviewCardRow, ReviewLog, ReviewLogPage, StatCard,
+    Statement, SyncNote, Value, answer_statements, build_tree, card_state_query, daily_counts,
+    daily_reviews_query, delete_statements, export_reviews_query, import_reviews_statement,
+    missing_cards_query, next_card_query, normalize_response, note_detail, note_stat_cards_query,
+    rebuild_cards_statement, review_card_from_row, reviews_json, stat_cards_query, statements_for,
+    upsert_statements, validate_review_log,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,7 @@ fn router(env: Env) -> Result<Router> {
         .route("/api/notes/{id}", get(note_stats))
         .route("/api/stats/daily", get(daily_stats))
         .route("/api/export/reviews", get(export_reviews))
+        .route("/api/import/reviews", post(import_reviews))
         .with_state(state))
 }
 
@@ -264,6 +267,71 @@ async fn export_reviews(State(state): State<AppState>, uri: Uri) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+struct ImportBody {
+    reviews: Vec<ReviewLog>,
+}
+
+#[derive(Deserialize)]
+struct MissingKey {
+    card_key: String,
+}
+
+#[worker::send]
+async fn import_reviews(
+    State(state): State<AppState>,
+    body: Result<Json<ImportBody>, JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    if body.reviews.len() > IMPORT_BATCH_MAX {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("行数が {IMPORT_BATCH_MAX} を超えている"),
+        )
+            .into_response();
+    }
+    for review in &body.reviews {
+        if let Err(err) = validate_review_log(review) {
+            return (StatusCode::BAD_REQUEST, err.to_string()).into_response();
+        }
+    }
+    let json = match reviews_json(&body.reviews) {
+        Ok(json) => json,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let missing_rows = match query_all::<MissingKey>(&state.db, &missing_cards_query(&json)).await {
+        Ok(rows) => rows,
+        Err(err) => return server_error(err),
+    };
+    let mut missing = Vec::new();
+    for row in &missing_rows {
+        if !missing.contains(&row.card_key) {
+            missing.push(row.card_key.clone());
+        }
+    }
+    let statements = [
+        import_reviews_statement(&json),
+        rebuild_cards_statement(&json, now_unix()),
+    ];
+    let inserted = match execute_changes(&state.db, &statements).await {
+        Ok(inserted) => inserted,
+        Err(err) => return server_error(err),
+    };
+    let accounted = inserted + missing_rows.len();
+    if accounted > body.reviews.len() {
+        return server_error("取り込み件数が行数を超えた");
+    }
+    Json(ImportResult {
+        inserted,
+        duplicates: body.reviews.len() - accounted,
+        missing,
+    })
+    .into_response()
+}
+
 fn parse_export_query(query: Option<&str>) -> Result<(i64, usize), &'static str> {
     let Some(query) = query.filter(|text| !text.is_empty()) else {
         return Ok((0, EXPORT_PAGE_DEFAULT));
@@ -339,9 +407,25 @@ async fn query_first<T: DeserializeOwned>(
         .await
 }
 
+async fn execute_changes(db: &D1Database, statements: &[Statement]) -> Result<usize> {
+    let results = execute_prepared(db, statements).await?;
+    let meta = results
+        .first()
+        .ok_or_else(|| Error::RustError("D1 batch が空".into()))?
+        .meta()?
+        .ok_or_else(|| Error::RustError("D1 の changes が無い".into()))?;
+    meta.changes
+        .ok_or_else(|| Error::RustError("D1 の changes が無い".into()))
+}
+
 async fn execute_batch(db: &D1Database, statements: &[Statement]) -> Result<()> {
+    execute_prepared(db, statements).await?;
+    Ok(())
+}
+
+async fn execute_prepared(db: &D1Database, statements: &[Statement]) -> Result<Vec<D1Result>> {
     if statements.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut prepared = Vec::with_capacity(statements.len());
     for statement in statements {
@@ -357,7 +441,7 @@ async fn execute_batch(db: &D1Database, statements: &[Statement]) -> Result<()> 
             return Err(Error::RustError(message));
         }
     }
-    Ok(())
+    Ok(results)
 }
 
 fn to_d1(value: &Value) -> JsValue {
