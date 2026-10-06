@@ -1,4 +1,5 @@
 mod day;
+mod import;
 mod lint;
 pub mod note;
 mod review;
@@ -12,6 +13,10 @@ mod vault;
 pub use day::{
     DAY_ROLLOVER_HOUR, JST_OFFSET_SECS, NEW_CARDS_PER_DAY, UNLOCK_ADVANCED_DAYS,
     UNLOCK_INTERMEDIATE_DAYS, study_day_start,
+};
+pub use import::{
+    IMPORT_BATCH_MAX, ImportResult, ReviewLogError, import_reviews_statement, missing_cards_query,
+    parse_review_log_line, rebuild_cards_statement, reviews_json, validate_review_log,
 };
 pub use lint::{Finding, IntegrationRefReason, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
