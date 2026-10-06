@@ -32,7 +32,7 @@ wrangler d1 create neuron-pokopoko
 
 ## 3. API トークンと GitHub の secrets
 
-1. Cloudflare ダッシュボード → My Profile → API Tokens → Create Token → テンプレート「Edit Cloudflare Workers」を選び、権限に「Account / D1 / Edit」と「Zone / DNS / Edit」を足す。Zone Resources に `digletts.dev` を含める(デプロイがカスタムドメインの DNS レコードを作るため)。作成済みのトークンは Edit で足せる(値は変わらない)
+1. Cloudflare ダッシュボード → My Profile → API Tokens → Create Token → テンプレート「Edit Cloudflare Workers」を選び、権限に「Account / D1 / Edit」を足して作る。Zone Resources には `digletts.dev` を含める
 2. GitHub → このリポジトリ → Settings → Secrets and variables → Actions に 2 つ登録する
    - `CLOUDFLARE_API_TOKEN`: 1 のトークン
    - `CLOUDFLARE_ACCOUNT_ID`: `wrangler whoami` に出る Account ID
