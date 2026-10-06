@@ -22,5 +22,5 @@ port = 8787
 [[d1_databases]]
 binding = "DB"
 database_name = "neuron-pokopoko"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "1e37dc47-0284-42fe-b1bc-4134e664b4a6"
 migrations_dir = "migrations"
