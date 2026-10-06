@@ -104,7 +104,7 @@ pub fn schedule(
     })
 }
 
-fn days_between(reviewed_at_unix: i64, now_unix: i64) -> u32 {
+pub(crate) fn days_between(reviewed_at_unix: i64, now_unix: i64) -> u32 {
     let seconds = now_unix.saturating_sub(reviewed_at_unix).max(0);
     u32::try_from(seconds / SECONDS_PER_DAY).unwrap_or(u32::MAX)
 }

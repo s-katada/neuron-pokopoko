@@ -2,6 +2,7 @@ mod day;
 mod import;
 mod lint;
 pub mod note;
+mod optimize;
 mod params;
 mod review;
 mod review_log;
@@ -21,6 +22,10 @@ pub use import::{
 };
 pub use lint::{Finding, IntegrationRefReason, LintError, LintKind, Report, lint_vault};
 pub use note::{Level, Note, NoteError, Section, parse_note};
+pub use optimize::{
+    MIN_OPTIMIZE_ITEMS, OptimizeError, OptimizePlan, compute_fsrs_parameters, fsrs_items,
+    optimize_plan,
+};
 pub use params::{
     FSRS_PARAMETER_LEN, FsrsParamsBody, ParamsError, PutFsrsParams, decay_of, default_decay,
     default_parameters, empty_fsrs_params, fsrs_params_query, parameters_or_default,
