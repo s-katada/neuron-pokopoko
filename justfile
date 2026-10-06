@@ -55,6 +55,10 @@ e2e-export:
 e2e-import:
     bash scripts/e2e-import.sh
 
+# 一時 D1 で FSRS パラメータの保存と出題を通す。ci には入れない
+e2e-params:
+    bash scripts/e2e-params.sh
+
 # 一時 D1 で出題ポリシーを通す。ci には入れない
 e2e-policy:
     bash scripts/e2e-policy.sh
