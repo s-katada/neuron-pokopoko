@@ -1,8 +1,13 @@
 # 本番セットアップ手順
 
-本番(Cloudflare の workers.dev)で毎日使えるようにするための、**人が行う**初期設定。上から順に 1 回だけ行う。
+本番(`https://neuron-pokopoko.digletts.dev`)で毎日使えるようにするための、**人が行う**初期設定。上から順に 1 回だけ行う。
 
-前提: このリポジトリで `direnv allow` 済み(wrangler・just が使える)。`wrangler login` 済み(`wrangler whoami` で確認)。
+前提:
+
+- このリポジトリで `direnv allow` 済み(wrangler・just が使える)。`wrangler login` 済み(`wrangler whoami` で確認)
+- `digletts.dev` が同じ Cloudflare アカウントのゾーンにある。`neuron-pokopoko.digletts.dev` の DNS レコードは手で作らない(デプロイがカスタムドメインとして作り、証明書も発行する)
+
+入口はこのカスタムドメインだけ。workers.dev とプレビュー URL は `wrangler.toml` の `workers_dev = false` と `preview_urls = false` で閉じてある(Access の抜け道にならない)。
 
 ## 1. 本番 D1 を作る
 
@@ -11,35 +16,38 @@ cd crates/worker
 wrangler d1 create neuron-pokopoko
 ```
 
-- 出力の `database_id` を `crates/worker/wrangler.toml` の `database_id`(今は全ゼロ)に書き、PR にしてマージする。ID は秘密情報ではない(Claude に渡せば PR を作る)
+- 出力の `database_id` を `crates/worker/wrangler.toml` の `database_id` に書き、PR にしてマージする。ID は秘密情報ではない(Claude に渡せば PR を作る)
 - テーブルの作成(マイグレーション)は手で流さない。デプロイのジョブが `--remote` で適用する
 
-## 2. API トークンと GitHub の secrets
+## 2. Access で保護する
 
-1. Cloudflare ダッシュボード → My Profile → API Tokens → Create Token → テンプレート「Edit Cloudflare Workers」を選び、権限に「Account / D1 / Edit」を足して作る
+**最初のデプロイ(3)より前に行う。** 先にデプロイすると、Access を作るまでドメインを誰でも開ける。
+
+1. Zero Trust → Access → Applications → Add an application → Self-hosted。ドメインは `neuron-pokopoko.digletts.dev`(パスは空 = 全体)
+2. ポリシーを追加: Action「Allow」、Include「Emails: 自分のメールアドレス」
+3. Zero Trust → Access → Service credentials → Service Tokens → Create Service Token(名前: `poko-cli`)。Client ID と Client Secret を控える(Secret は一度しか表示されない)
+4. 1 のアプリにポリシーを追加: Action「Service Auth」、Include「Service Token: poko-cli」
+
+セッションの長さはアプリの設定で変えられる。毎日スマホで開くなら長めにするとログインの手間が減る。
+
+## 3. API トークンと GitHub の secrets
+
+1. Cloudflare ダッシュボード → My Profile → API Tokens → Create Token → テンプレート「Edit Cloudflare Workers」を選び、権限に「Account / D1 / Edit」と「Zone / DNS / Edit」を足す。Zone Resources に `digletts.dev` を含める(デプロイがカスタムドメインの DNS レコードを作るため)。作成済みのトークンは Edit で足せる(値は変わらない)
 2. GitHub → このリポジトリ → Settings → Secrets and variables → Actions に 2 つ登録する
    - `CLOUDFLARE_API_TOKEN`: 1 のトークン
    - `CLOUDFLARE_ACCOUNT_ID`: `wrangler whoami` に出る Account ID
-3. 1 の PR(または次の PR)を main にマージすると、CI が通ったあと deploy ジョブが動く。Actions のログに出る URL(`https://neuron-pokopoko.<サブドメイン>.workers.dev`)を控える
+3. 1 の PR(または次の PR)を main にマージすると、CI が通ったあと deploy ジョブが動き、`https://neuron-pokopoko.digletts.dev` に公開される
 
 secrets か D1 の ID が未設定の間、deploy ジョブは警告を出してスキップする(CI は緑のまま)。
 
-## 3. Access で保護する
+## 4. CLI の環境変数
 
-1. Workers & Pages → neuron-pokopoko → Settings → Domains & Routes → workers.dev の「Enable Cloudflare Access」
-2. 作られた Access アプリケーションのポリシーを「自分のメールアドレスだけ Allow」にする
-3. プレビュー URL は `wrangler.toml` の `preview_urls = false` で無効化済み(抜け道にならない)
-
-## 4. CLI 用のサービストークン
-
-1. Zero Trust → Access → Service credentials → Service Tokens → Create Service Token(名前: `poko-cli`)。Client ID と Client Secret を控える(Secret は一度しか表示されない)
-2. 3 の Access アプリケーションにポリシーを追加: Action「Service Auth」、Include「Service Token: poko-cli」
-3. 手元の環境変数に設定する(**リポジトリにはコミットしない**)。fish の場合:
+手元の環境変数に設定する(**リポジトリにはコミットしない**)。fish の場合:
 
 ```fish
-set -Ux POKO_ENDPOINT https://neuron-pokopoko.<サブドメイン>.workers.dev
-set -Ux POKO_ACCESS_CLIENT_ID <Client ID>
-set -Ux POKO_ACCESS_CLIENT_SECRET <Client Secret>
+set -Ux POKO_ENDPOINT https://neuron-pokopoko.digletts.dev
+set -Ux POKO_ACCESS_CLIENT_ID <2 で控えた Client ID>
+set -Ux POKO_ACCESS_CLIENT_SECRET <2 で控えた Client Secret>
 ```
 
 消すときは `set -eU <名前>`。
@@ -54,7 +62,7 @@ just verify-prod
 
 ## 6. スマホのホーム画面に置く
 
-スマホのブラウザで本番 URL を開いて Access にログインし、共有メニューから「ホーム画面に追加」。Access のログインが切れたときは、画面が自動で再読み込みしてログイン画面に移る。
+スマホのブラウザで `https://neuron-pokopoko.digletts.dev` を開いて Access にログインし、共有メニューから「ホーム画面に追加」。Access のログインが切れたときは、画面が自動で再読み込みしてログイン画面に移る。
 
 ## 日々の使い方
 
