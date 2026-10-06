@@ -2,6 +2,7 @@ mod day;
 mod lint;
 pub mod note;
 mod review;
+mod review_log;
 mod schedule;
 mod stats;
 mod sync;
@@ -18,6 +19,9 @@ pub use review::{
     Answer, AnswerRequest, AnswerResponse, CardState, MAX_RESPONSE_CHARS, NextResponse,
     ResponseError, ReviewCard, ReviewCardRow, answer_statements, card_state_query, next_card_query,
     normalize_response, review_card_from_row,
+};
+pub use review_log::{
+    EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, ReviewLog, ReviewLogPage, export_reviews_query,
 };
 pub use schedule::{Card, Memory, Rating, ScheduleError, Scheduled, schedule};
 pub use stats::{

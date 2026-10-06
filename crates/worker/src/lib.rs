@@ -10,12 +10,12 @@ use axum::{
     routing::{get, post},
 };
 use poko_core::{
-    AnswerRequest, AnswerResponse, CardState, MAX_DELETE_IDS_PER_REQUEST,
-    MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating, ReviewCardRow, StatCard,
-    Statement, SyncNote, Value, answer_statements, build_tree, card_state_query, daily_counts,
-    daily_reviews_query, delete_statements, next_card_query, normalize_response, note_detail,
-    note_stat_cards_query, review_card_from_row, stat_cards_query, statements_for,
-    upsert_statements,
+    AnswerRequest, AnswerResponse, CardState, EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX,
+    MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST, ManifestEntry, NextResponse, Rating,
+    ReviewCardRow, ReviewLogPage, StatCard, Statement, SyncNote, Value, answer_statements,
+    build_tree, card_state_query, daily_counts, daily_reviews_query, delete_statements,
+    export_reviews_query, next_card_query, normalize_response, note_detail, note_stat_cards_query,
+    review_card_from_row, stat_cards_query, statements_for, upsert_statements,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,7 @@ fn router(env: Env) -> Result<Router> {
         .route("/api/tree", get(tree))
         .route("/api/notes/{id}", get(note_stats))
         .route("/api/stats/daily", get(daily_stats))
+        .route("/api/export/reviews", get(export_reviews))
         .with_state(state))
 }
 
@@ -249,6 +250,49 @@ async fn daily_stats(State(state): State<AppState>, uri: Uri) -> Response {
         }
         Err(err) => server_error(err),
     }
+}
+
+#[worker::send]
+async fn export_reviews(State(state): State<AppState>, uri: Uri) -> Response {
+    let (after, limit) = match parse_export_query(uri.query()) {
+        Ok(parsed) => parsed,
+        Err(message) => return (StatusCode::BAD_REQUEST, message.to_owned()).into_response(),
+    };
+    match query_all::<ReviewLogPage>(&state.db, &export_reviews_query(after, limit)).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(err) => server_error(err),
+    }
+}
+
+fn parse_export_query(query: Option<&str>) -> Result<(i64, usize), &'static str> {
+    let Some(query) = query.filter(|text| !text.is_empty()) else {
+        return Ok((0, EXPORT_PAGE_DEFAULT));
+    };
+    let mut after = None;
+    let mut limit = None;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "after" => {
+                let parsed: i64 = value.parse().map_err(|_| "after が不正")?;
+                if parsed < 0 {
+                    return Err("after は 0 以上");
+                }
+                after = Some(parsed);
+            }
+            "limit" => {
+                let parsed: usize = value.parse().map_err(|_| "limit が不正")?;
+                if !(1..=EXPORT_PAGE_MAX).contains(&parsed) {
+                    return Err("limit は 1 から 500");
+                }
+                limit = Some(parsed);
+            }
+            _ => {}
+        }
+    }
+    Ok((after.unwrap_or(0), limit.unwrap_or(EXPORT_PAGE_DEFAULT)))
 }
 
 fn parse_days(query: Option<&str>) -> Result<usize, &'static str> {
