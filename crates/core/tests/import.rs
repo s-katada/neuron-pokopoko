@@ -90,7 +90,15 @@ fn state(conn: &Connection, key: &str) -> CardState {
 }
 
 fn answer(conn: &Connection, key: &str, rating: Rating, now: i64, response: Option<&str>) {
-    let answered = answer_statements(key, &state(conn, key), rating, now, response).unwrap();
+    let answered = answer_statements(
+        key,
+        &state(conn, key),
+        rating,
+        now,
+        response,
+        &poko_core::default_parameters(),
+    )
+    .unwrap();
     apply(conn, &answered.statements);
 }
 

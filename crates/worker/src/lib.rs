@@ -14,10 +14,11 @@ use poko_core::{
     IMPORT_BATCH_MAX, ImportResult, MAX_DELETE_IDS_PER_REQUEST, MAX_STATEMENTS_PER_REQUEST,
     ManifestEntry, NextResponse, Rating, ReviewCardRow, ReviewLog, ReviewLogPage, StatCard,
     Statement, SyncNote, Value, answer_statements, build_tree, card_state_query, daily_counts,
-    daily_reviews_query, delete_statements, export_reviews_query, import_reviews_statement,
-    missing_cards_query, next_card_query, normalize_response, note_detail, note_stat_cards_query,
-    rebuild_cards_statement, review_card_from_row, reviews_json, stat_cards_query, statements_for,
-    upsert_statements, validate_review_log,
+    daily_reviews_query, default_decay, default_parameters, delete_statements,
+    export_reviews_query, import_reviews_statement, missing_cards_query, next_card_query,
+    normalize_response, note_detail, note_stat_cards_query, rebuild_cards_statement,
+    review_card_from_row, reviews_json, stat_cards_query, statements_for, upsert_statements,
+    validate_review_log,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -193,6 +194,7 @@ async fn review_answer(
         rating,
         now_unix(),
         response.as_deref(),
+        &default_parameters(),
     ) {
         Ok(answer) => answer,
         Err(_) => {
@@ -217,7 +219,7 @@ async fn review_answer(
 async fn tree(State(state): State<AppState>) -> Response {
     let now = now_unix();
     match query_all::<StatCard>(&state.db, &stat_cards_query()).await {
-        Ok(rows) => Json(build_tree(&rows, now)).into_response(),
+        Ok(rows) => Json(build_tree(&rows, now, default_decay())).into_response(),
         Err(err) => server_error(err),
     }
 }
@@ -226,7 +228,7 @@ async fn tree(State(state): State<AppState>) -> Response {
 async fn note_stats(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let now = now_unix();
     match query_all::<StatCard>(&state.db, &note_stat_cards_query(&id)).await {
-        Ok(rows) => match note_detail(&rows, &id, now) {
+        Ok(rows) => match note_detail(&rows, &id, now, default_decay()) {
             Some(detail) => Json(detail).into_response(),
             None => (StatusCode::NOT_FOUND, "ノートがない".to_owned()).into_response(),
         },
