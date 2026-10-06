@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -6,8 +7,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use poko_core::{
-    EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, ManifestEntry, Report, ReviewLogPage, SyncNote, chunk,
-    chunk_deletes, collect, lint_vault, plan,
+    EXPORT_PAGE_DEFAULT, EXPORT_PAGE_MAX, IMPORT_BATCH_MAX, ImportResult, ManifestEntry, Report,
+    ReviewLog, ReviewLogPage, SyncNote, chunk, chunk_deletes, collect, lint_vault,
+    parse_review_log_line, plan,
 };
 use serde::Serialize;
 
@@ -45,6 +47,16 @@ enum Command {
         #[arg(long, hide = true)]
         page_size: Option<usize>,
     },
+    /// JSONL から復習ログを戻す
+    ///
+    /// 送り先は --endpoint、無ければ POKO_ENDPOINT、それも無ければ http://localhost:8787。
+    /// POKO_ACCESS_CLIENT_ID と POKO_ACCESS_CLIENT_SECRET が両方あるとき、全リクエストに Cloudflare Access のサービストークンを付ける。片方だけはエラー。
+    Import {
+        file: PathBuf,
+        /// Worker のベース URL。未指定なら POKO_ENDPOINT、それも無ければ http://localhost:8787
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -57,6 +69,7 @@ fn main() -> ExitCode {
             endpoint,
             page_size,
         } => export_command(&file, endpoint.as_deref(), page_size),
+        Command::Import { file, endpoint } => import_command(&file, endpoint.as_deref()),
     }
 }
 
@@ -248,6 +261,124 @@ fn write_export(
     Ok(count)
 }
 
+const IMPORT_BODY_MAX: usize = 256 * 1024;
+
+fn import_command(file: &Path, endpoint: Option<&str>) -> ExitCode {
+    let text = match fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut errors = Vec::new();
+    let mut logs = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_review_log_line(line) {
+            Ok(log) => logs.push(log),
+            Err(err) => errors.push(format!("{}: {err}", index + 1)),
+        }
+    }
+    if !errors.is_empty() {
+        for error in errors {
+            eprintln!("{error}");
+        }
+        return ExitCode::from(1);
+    }
+    let rows = logs.len();
+    let mut seen = HashSet::new();
+    logs.retain(|log| seen.insert((log.card_key.clone(), log.reviewed_at)));
+    let mut duplicates = rows - logs.len();
+    let chunks = match chunk_import(&logs) {
+        Ok(chunks) => chunks,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::from(1);
+        }
+    };
+    let endpoint = resolve_endpoint(endpoint);
+    let access = match access_from_env() {
+        Ok(access) => access,
+        Err(code) => return code,
+    };
+    let agent = http_agent();
+    let mut inserted = 0;
+    let mut missing = Vec::new();
+    let mut missing_seen = HashSet::new();
+    for chunk in &chunks {
+        let body = ImportBody { reviews: chunk };
+        let result = match post_json_read::<ImportResult>(
+            &agent,
+            &url(&endpoint, "/api/import/reviews"),
+            &body,
+            access.as_ref(),
+        ) {
+            Ok(result) => result,
+            Err(code) => return code,
+        };
+        inserted += result.inserted;
+        duplicates += result.duplicates;
+        for key in result.missing {
+            if missing_seen.insert(key.clone()) {
+                missing.push(key);
+            }
+        }
+    }
+    println!(
+        "imported {inserted}, duplicates {duplicates}, missing {}",
+        missing.len()
+    );
+    if missing.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        for key in missing {
+            eprintln!("{key}");
+        }
+        ExitCode::from(1)
+    }
+}
+
+fn chunk_import(logs: &[ReviewLog]) -> Result<Vec<Vec<ReviewLog>>, String> {
+    // {"reviews":} と配列の []。2 行目以降は区切りの , を足す。
+    const BODY_BASE: usize = "{\"reviews\":}".len() + 2;
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut current_len = 0usize;
+    for log in logs {
+        if current.len() == IMPORT_BATCH_MAX {
+            chunks.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        let encoded = log.to_json_line().map_err(|err| err.to_string())?;
+        let next_len = if current.is_empty() {
+            BODY_BASE + encoded.len()
+        } else {
+            current_len + 1 + encoded.len()
+        };
+        current.push(log.clone());
+        current_len = next_len;
+        if current_len > IMPORT_BODY_MAX {
+            current.pop();
+            if current.is_empty() {
+                return Err("1 行が 256KB を超えている".to_owned());
+            }
+            chunks.push(std::mem::take(&mut current));
+            current.push(log.clone());
+            current_len = BODY_BASE + encoded.len();
+            if current_len > IMPORT_BODY_MAX {
+                return Err("1 行が 256KB を超えている".to_owned());
+            }
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    Ok(chunks)
+}
+
 fn http_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
@@ -329,6 +460,24 @@ fn get_json<T: serde::de::DeserializeOwned>(
     access: Option<&Access>,
 ) -> Result<T, ExitCode> {
     let mut response = http(with_access(agent.get(url), access).call())?;
+    response.body_mut().read_json().map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::from(1)
+    })
+}
+
+#[derive(Serialize)]
+struct ImportBody<'a> {
+    reviews: &'a [ReviewLog],
+}
+
+fn post_json_read<T: serde::de::DeserializeOwned>(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &impl Serialize,
+    access: Option<&Access>,
+) -> Result<T, ExitCode> {
+    let mut response = http(with_access(agent.post(url), access).send_json(body))?;
     response.body_mut().read_json().map_err(|err| {
         eprintln!("{err}");
         ExitCode::from(1)
