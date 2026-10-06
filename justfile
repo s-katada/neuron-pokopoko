@@ -47,6 +47,10 @@ e2e-sync:
 e2e-review:
     bash scripts/e2e-review.sh
 
+# 一時 D1 で復習ログの JSONL 書き出しを通す。ci には入れない
+e2e-export:
+    bash scripts/e2e-export.sh
+
 # 一時 D1 で出題ポリシーを通す。ci には入れない
 e2e-policy:
     bash scripts/e2e-policy.sh
