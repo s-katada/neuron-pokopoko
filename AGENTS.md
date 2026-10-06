@@ -31,3 +31,4 @@
 - pnpm 11+: overrides と allowBuilds は `pnpm-workspace.yaml` に書く(package.json の pnpm キーは読まれない)
 - Vite+: import は `'vite-plus'` から。vitest は devDep に明示追加し Vite+ 同梱バージョンに固定。vitest 設定は vite.config.ts の test ブロック
 - `wrangler dev` は assets を使う構成では dist が無いと起動しない(先に web をビルド)
+- worker crate と flake の worker-build はバージョンを揃える(上げるときは flake.lock の nixpkgs と一緒に)
